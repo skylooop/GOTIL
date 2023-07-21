@@ -1,6 +1,6 @@
-# Offline Goal-Conditioned RL with Latent States as Actions
+# HIQL: Offline Goal-Conditioned RL with Latent States as Actions
 
-## [Videos](https://sites.google.com/view/hiql)
+## [Project Page](https://seohong.me/projects/hiql/)
 
 ## Overview
 This is the official implementation of **Hierarchical Implicit Q-Learning** (**HIQL**).
@@ -14,10 +14,13 @@ pip install -r requirements.txt --no-deps
 pip install "jax[cuda11_cudnn82]==0.4.3" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 
 # Install CALVIN (optional)
+# Download `calvin.gz` (dataset) following the instructions at https://github.com/clvrai/skimo and place it in the `data` directory.
 cd calvin
 ./install.sh
 
 # Install Procgen (optional)
+# Download `level500.npz` (dataset) from https://drive.google.com/file/d/1l1yHwzCYxHdgnW55R5pyhKFzHFqIQiQC/view and place it in the `data/procgen` directory.
+# Download `level1000.npz` (dataset) from https://drive.google.com/file/d/19MqYZUENWWP7dHzlZFKhdVnouSxqfl5A/view and place it in the `data/procgen` directory.
 pip install procgen
 ```
 
