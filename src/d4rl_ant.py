@@ -25,11 +25,11 @@ def get_canvas_image(canvas):
 
 def valid_goal_sampler(self, np_random):
     valid_cells = []
-    goal_cells = []
-    # print('Hello')
 
     for i in range(len(self._maze_map)):
       for j in range(len(self._maze_map[0])):
+        # r - agent can be init here
+        # g - goal cell
         if self._maze_map[i][j] in [0, 'r', 'g']:
           valid_cells.append((i, j))
 
@@ -50,7 +50,6 @@ def valid_goal_sampler(self, np_random):
 class GoalReachingAnt(gym.Wrapper):
     def __init__(self, env_name):
         self.env = gym.make(env_name)
-        # self.env.env._wrapped_env.goal_sampler = ft.partial(valid_goal_sampler, self.env.env._wrapped_env)
         self.env.env.env._wrapped_env.goal_sampler = ft.partial(valid_goal_sampler, self.env.env.env._wrapped_env)
         self.observation_space = gym.spaces.Dict({
             'observation': self.env.observation_space,

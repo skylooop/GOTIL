@@ -32,7 +32,7 @@ flags.DEFINE_integer('seed', 0, '')
 flags.DEFINE_integer('eval_episodes', 50, '')
 flags.DEFINE_integer('num_video_episodes', 2, '')
 flags.DEFINE_integer('log_interval', 1000, '')
-flags.DEFINE_integer('eval_interval', 100000, '')
+flags.DEFINE_integer('eval_interval', 5000, '')
 flags.DEFINE_integer('save_interval', 100000, '')
 flags.DEFINE_integer('batch_size', 1024, '')
 flags.DEFINE_integer('pretrain_steps', 0, '')
@@ -125,13 +125,6 @@ def main(_):
 
     exp_name = ''
     exp_name += f'sd{FLAGS.seed:03d}_'
-    if 'SLURM_JOB_ID' in os.environ:
-        exp_name += f's_{os.environ["SLURM_JOB_ID"]}.'
-    if 'SLURM_PROCID' in os.environ:
-        exp_name += f'{os.environ["SLURM_PROCID"]}.'
-    if 'SLURM_RESTART_COUNT' in os.environ:
-        exp_name += f'rs_{os.environ["SLURM_RESTART_COUNT"]}.'
-    exp_name += f'{g_start_time}'
     exp_name += f'_{FLAGS.wandb["name"]}'
 
     FLAGS.gcdataset['p_randomgoal'] = FLAGS.p_randomgoal
@@ -167,7 +160,6 @@ def main(_):
         env_name = FLAGS.env_name
 
         if 'ultra' in FLAGS.env_name:
-            import d4rl_ext
             import gym
             env = gym.make(env_name)
             env = EpisodeMonitor(env)

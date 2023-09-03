@@ -40,6 +40,7 @@ def get_dataset(env: gym.Env,
 
         if 'antmaze' in env_name:
             # antmaze: terminals are incorrect for GCRL
+            # no terminals since each new goal is set after obtained
             dones_float = np.zeros_like(dataset['rewards'])
             dataset['terminals'][:] = 0.
 

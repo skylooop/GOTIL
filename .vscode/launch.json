@@ -1,0 +1,46 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "hiql",
+            "type": "python",
+            "request": "launch",
+            "program": "/home/simmax21/Desktop/HIQL/main.py",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "args": [
+                "--run_group", "EXP",
+                "--seed", "0",
+                "--env_name", "antmaze-large-diverse-v2",
+                "--pretrain_steps", "1000002",
+                "--pretrain_steps", "1000002",
+                "--save_interval", "250000",
+                "--p_currgoal", "0.2",
+                "--p_trajgoal", "0.5",
+                "--p_randomgoal", "0.3",
+                "--discount", "0.99",
+                "--temperature", "1",
+                "--high_temperature", "1",
+                "--pretrain_expectile", "0.7",
+                "--geom_sample", "1",
+                "--use_layer_norm", "1",
+                "--value_hidden_dim", "512",
+                "--value_num_layers", "3",
+                "--batch_size", "16",
+                "--use_rep", "1",
+                "-policy_train_rep", "0",
+                "--rep_dim", "10",
+                "--rep_type", "concat",
+                "--algo_name", "hiql",
+                "--use_waypoints", "1",
+                "--way_steps", "25",
+                "--high_p_randomgoal", "0.3"
+
+            ],
+            "justMyCode": true
+        }
+    ]
+}

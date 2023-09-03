@@ -282,7 +282,7 @@ def create_learner(
             action_dim = actions.shape[-1]
             actor_def = Policy(actor_hidden_dims, action_dim=action_dim, log_std_min=-5.0, state_dependent_std=False, tanh_squash_distribution=False)
 
-        high_action_dim = observations.shape[-1] if not use_rep else rep_dim
+        high_action_dim = observations.shape[-1] if not use_rep else rep_dim # outputing states
         high_actor_def = Policy(actor_hidden_dims, action_dim=high_action_dim, log_std_min=-5.0, state_dependent_std=False, tanh_squash_distribution=False)
 
         network_def = HierarchicalActorCritic(
@@ -297,8 +297,8 @@ def create_learner(
             networks={
                 'value': value_def,
                 'target_value': copy.deepcopy(value_def),
-                'actor': actor_def,
-                'high_actor': high_actor_def,
+                'actor': actor_def, # outputting actions
+                'high_actor': high_actor_def, # outputting state repr
             },
             use_waypoints=use_waypoints,
         )
