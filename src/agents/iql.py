@@ -1,5 +1,4 @@
 """Implementations of algorithms for continuous control."""
-import functools
 from jaxrl_m.typing import *
 
 import jax

@@ -139,11 +139,11 @@ def get_env_and_dataset(env_name):
     dataset = Dataset.create(**dataset)
     return env, dataset
 
-def plot_value(env, dataset, value_fn, fig, ax, N=20, random=False, title=None):
+def plot_value(env, dataset, value_fn, fig, ax, N=20, random=True, title=None):
     observations = env.XY(n=N)
 
     if random:
-        base_observations = np.copy(dataset['observations'][np.random.choice(dataset.size, len(observations))])
+        base_observations = np.copy(dataset['observations'])[np.random.choice(dataset.size, len(observations))]
     else:
         base_observation = np.copy(dataset['observations'][0])
         base_observations = np.tile(base_observation, (observations.shape[0], 1))

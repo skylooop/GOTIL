@@ -175,7 +175,7 @@ def main(_):
         if 'large' in FLAGS.env_name:
             env.viewer.cam.lookat[0] = 18
             env.viewer.cam.lookat[1] = 12
-            env.viewer.cam.distance = 40
+            env.viewer.cam.distance = 50
             env.viewer.cam.elevation = -90
             
             viz_env, viz_dataset = d4rl_ant.get_env_and_dataset(env_name)
@@ -275,7 +275,6 @@ def main(_):
         raise NotImplementedError
 
     env.reset()
-
     pretrain_dataset = GCSDataset(dataset, **FLAGS.gcdataset.to_dict())
     total_steps = FLAGS.pretrain_steps
     example_batch = dataset.sample(1)
@@ -306,6 +305,19 @@ def main(_):
                                     use_layer_norm=FLAGS.use_layer_norm,
                                     rep_type=FLAGS.rep_type,
                                     **FLAGS.config)
+    elif FLAGS.algo_name == "cilot":
+        from src.agents import cilot
+        agent = cilot.create_learner( FLAGS.seed,
+                                    example_batch['observations'],
+                                    example_batch['actions'] if not discrete else example_action,
+                                    max_action=float(env.action_space.high[0]),
+                                    visual=FLAGS.visual,
+                                    encoder=FLAGS.encoder,
+                                    discrete=discrete,
+                                    use_layer_norm=FLAGS.use_layer_norm,
+                                    rep_type=FLAGS.rep_type,
+                                    **FLAGS.config)
+        
     elif FLAGS.algo_name == "sac":
         from src.agents import sac
         agent = sac.create_learner( FLAGS.seed,
@@ -318,9 +330,7 @@ def main(_):
                                     rep_type=FLAGS.rep_type,
                                     **FLAGS.config)
         agent.train()
-    # first_time = time.time()
-    # last_time = time.time()
-    
+
     for i in tqdm.tqdm(range(1, total_steps + 1),
                        smoothing=0.1,
                        dynamic_ncols=True):
@@ -331,9 +341,7 @@ def main(_):
             debug_statistics = get_debug_statistics(agent, pretrain_batch)
             train_metrics = {f'training/{k}': v for k, v in update_info.items()}
             train_metrics.update({f'pretraining/debug/{k}': v for k, v in debug_statistics.items()})
-            # train_metrics['time/epoch_time'] = (time.time() - last_time) / FLAGS.log_interval
-            # train_metrics['time/total_time'] = (time.time() - first_time)
-            # last_time = time.time()
+
             wandb.log(train_metrics, step=i)
             train_logger.log(train_metrics, step=i)
 

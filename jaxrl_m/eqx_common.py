@@ -20,3 +20,16 @@ class TrainState(eqx.Module):
             model=new_model,
             optim_state=new_optim_state
         )
+        
+class CriticTrainState(TrainState):
+    target_model: eqx.Module
+
+    def soft_update(self, tau):
+        model_params = eqx.filter(self.model, eqx.is_array)
+        target_model_params, target_model_static = eqx.partition(self.target_model, eqx.is_array)
+
+        new_target_params = optax.incremental_update(model_params, target_model_params, tau)
+        return dataclasses.replace(
+            self,
+            target_model=eqx.combine(new_target_params, target_model_static)
+        )
