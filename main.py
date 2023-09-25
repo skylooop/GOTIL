@@ -1,6 +1,7 @@
 import os
-import time
-from datetime import datetime
+import warnings
+os.environ["D4RL_SUPPRESS_IMPORT_ERROR"] = "1"
+warnings.filterwarnings("ignore")
 
 from absl import app, flags
 from functools import partial
@@ -11,7 +12,7 @@ import flax
 import gzip
 
 import tqdm
-from src.agents import hiql as learner
+from src.agents import hiql, cilot, icvf
 from src import d4rl_utils, d4rl_ant, ant_diagnostics, viz_utils
 from src.gc_dataset import GCSDataset
 
@@ -64,13 +65,16 @@ flags.DEFINE_string('algo_name', "hiql", '')
 
 wandb_config = default_wandb_config()
 wandb_config.update({
-    'project': 'hiql',
+    'project': 'RLJAX',
     'group': 'baseline',
     'name': '{env_name}',
 })
 
 config_flags.DEFINE_config_dict('wandb', wandb_config, lock_config=False)
-config_flags.DEFINE_config_dict('config', learner.get_default_config(), lock_config=False)
+# if FLAGS.algo_name == "hiql":
+#     config_flags.DEFINE_config_dict('config', hiql.get_default_config(), lock_config=False)
+# elif FLAGS.algo_name == "cilot":
+#     config_flags.DEFINE_config_dict('config', cilot.get_default_config(), lock_config=False)
 
 gcdataset_config = GCSDataset.get_default_config()
 config_flags.DEFINE_config_dict('gcdataset', gcdataset_config, lock_config=False)
@@ -123,7 +127,14 @@ def get_traj_v(agent, trajectory):
 def main(_):
     exp_name = ''
     exp_name += f'{FLAGS.wandb["name"]}'
-
+    
+    if FLAGS.algo_name == "hiql":
+        config_flags.DEFINE_config_dict('config', hiql.get_default_config(), lock_config=False)
+    elif FLAGS.algo_name == "icvf":
+        config_flags.DEFINE_config_dict('config', icvf.get_default_config(), lock_config=False)
+    elif FLAGS.algo_name == "cilot":
+        config_flags.DEFINE_config_dict('config', cilot.get_default_config(), lock_config=False)
+        
     FLAGS.gcdataset['p_randomgoal'] = FLAGS.p_randomgoal
     FLAGS.gcdataset['p_trajgoal'] = FLAGS.p_trajgoal
     FLAGS.gcdataset['p_currgoal'] = FLAGS.p_currgoal
@@ -158,17 +169,16 @@ def main(_):
 
         if 'ultra' in FLAGS.env_name:
             import d4rl_ext
-            from src.d4rl_ant import valid_goal_sampler
             import gym
             env = gym.make(env_name)
             env = EpisodeMonitor(env)
-            #env.env.env._wrapped.goal_sampler = partial(valid_goal_sampler, env.env.env._wrapped) #####
         else:
             env = d4rl_utils.make_env(env_name)
 
-        dataset = d4rl_utils.get_dataset(env, FLAGS.env_name)
+        dataset = d4rl_utils.get_dataset(env, FLAGS.env_name) # each trajectory consists of 1k steps
         dataset = dataset.copy({'rewards': dataset['rewards'] - 1.0})
         
+        ## for headless server
         os.environ["CUDA_VISIBLE_DEVICES"]="4"
         env.render(mode='rgb_array', width=200, height=200)
         os.environ["CUDA_VISIBLE_DEVICES"]="0,1,2,3"
@@ -295,7 +305,7 @@ def main(_):
     train_logger = CsvLogger(os.path.join(FLAGS.save_dir, 'train.csv'))
     eval_logger = CsvLogger(os.path.join(FLAGS.save_dir, 'eval.csv'))
     if FLAGS.algo_name == "hiql":
-        agent = learner.create_learner(
+        agent = hiql.create_learner(
                                     FLAGS.seed,
                                     example_batch['observations'],
                                     example_batch['actions'] if not discrete else example_action,
@@ -305,32 +315,20 @@ def main(_):
                                     use_layer_norm=FLAGS.use_layer_norm,
                                     rep_type=FLAGS.rep_type,
                                     **FLAGS.config)
+    elif FLAGS.algo_name == "icvf":
+        agent = icvf.create_learner(
+                                    FLAGS.seed,
+                                    example_batch['observations'])
     elif FLAGS.algo_name == "cilot":
-        from src.agents import cilot
-        agent = cilot.create_learner( FLAGS.seed,
+        agent = cilot.create_learner(FLAGS.seed,
                                     example_batch['observations'],
                                     example_batch['actions'] if not discrete else example_action,
-                                    max_action=float(env.action_space.high[0]),
                                     visual=FLAGS.visual,
                                     encoder=FLAGS.encoder,
                                     discrete=discrete,
-                                    use_layer_norm=FLAGS.use_layer_norm,
                                     rep_type=FLAGS.rep_type,
                                     **FLAGS.config)
         
-    elif FLAGS.algo_name == "sac":
-        from src.agents import sac
-        agent = sac.create_learner( FLAGS.seed,
-                                    example_batch['observations'],
-                                    example_batch['actions'] if not discrete else example_action,
-                                    visual=FLAGS.visual,
-                                    encoder=FLAGS.encoder,
-                                    discrete=discrete,
-                                    use_layer_norm=FLAGS.use_layer_norm,
-                                    rep_type=FLAGS.rep_type,
-                                    **FLAGS.config)
-        agent.train()
-
     for i in tqdm.tqdm(range(1, total_steps + 1),
                        smoothing=0.1,
                        dynamic_ncols=True):

@@ -47,7 +47,7 @@ def get_flag_dict():
 def default_wandb_config():
     config = ml_collections.ConfigDict()
     config.offline = False  # Syncs online or not?
-    config.project = "jaxrl_m"  # WandB Project Name
+    config.project = "RLJAX"  # WandB Project Name
     config.entity = FieldReference(None, field_type=str)  # Which entity to log as (default: your own user)
 
     group_name = FieldReference(None, field_type=str)  # Group name

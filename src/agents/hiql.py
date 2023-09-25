@@ -265,7 +265,7 @@ def create_learner(
             high_policy_goal_encoder = make_encoder(bottleneck=False)
         else:
             def make_encoder(bottleneck):
-                if bottleneck:
+                if bottleneck: # simple encoder
                     return RelativeRepresentation(rep_dim=rep_dim, hidden_dims=(*value_hidden_dims, rep_dim), layer_norm=use_layer_norm, rep_type=rep_type, bottleneck=True)
                 else:
                     return RelativeRepresentation(rep_dim=value_hidden_dims[-1], hidden_dims=(*value_hidden_dims, value_hidden_dims[-1]), layer_norm=use_layer_norm, rep_type=rep_type, bottleneck=False)
@@ -327,7 +327,7 @@ def get_default_config():
         'discount': 0.99,
         'temperature': 1.0,
         'tau': 0.005,
-        'pretrain_expectile': 0.7,
+        'pretrain_expectile': 0.85,
     })
 
     return config

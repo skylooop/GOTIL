@@ -1,6 +1,9 @@
 ## Overview
 This is the official implementation of **Hierarchical Implicit Q-Learning** (**HIQL**).
-
+Run with 
+```
+python main.py --flagfile=configs.antmaze-large.cfg
+```
 ## Installation
 
 ```

@@ -27,7 +27,7 @@ def valid_goal_sampler(self, np_random):
 
 def make_env(env_name: str):
     env = gym.make(env_name)
-    #env.env.env.unwrapped.goal_sampler = functools.partial(valid_goal_sampler, env.env.env.unwrapped)
+    #env.env.env.unwrapped.goal_sampler = functools.partial(valid_goal_sampler, env.env.env.unwrapped) - for random goals
     env = EpisodeMonitor(env)
     return env
 
@@ -61,7 +61,7 @@ def get_dataset(env: gym.Env,
 
         if 'antmaze' in env_name:
             # antmaze: terminals are incorrect for GCRL
-            dones_float = np.zeros_like(dataset['rewards'])
+            dones_float = np.zeros_like(dataset['rewards']) # (ds_size, 1), no trajectories, only states
             dataset['terminals'][:] = 0.
 
             for i in range(len(dones_float) - 1):

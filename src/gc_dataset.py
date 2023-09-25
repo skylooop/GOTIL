@@ -44,7 +44,7 @@ class GCDataset:
             p_currgoal = self.p_currgoal
 
         batch_size = len(indx)
-        # Random goals
+        # Random goals (from whole ds)
         goal_indx = np.random.randint(self.dataset.size, size=batch_size)
         
         # Goals from the same trajectory
@@ -103,13 +103,14 @@ class GCSDataset(GCDataset):
 
         batch = self.dataset.sample(batch_size, indx)
         goal_indx = self.sample_goals(indx)
-
+        desired_goal_indx = self.sample_goals(indx)
         success = (indx == goal_indx)
-
+        desired_success = (indx == desired_goal_indx)
         batch['rewards'] = success.astype(float) * self.reward_scale + self.reward_shift
-
+        batch['desired_rewards'] = desired_success.astype(float) * self.reward_scale + self.reward_shift
+        
         if self.terminal:
-            batch['masks'] = (1.0 - success.astype(float))
+            batch['masks'] = (1.0 - success.astype(float)) # no termination after achieved current goal
         else:
             batch['masks'] = np.ones(batch_size)
 
@@ -117,15 +118,15 @@ class GCSDataset(GCDataset):
 
         final_state_indx = self.terminal_locs[np.searchsorted(self.terminal_locs, indx)]
         way_indx = np.minimum(indx + self.way_steps, final_state_indx)
-        batch['low_goals'] = jax.tree_map(lambda arr: arr[way_indx], self.dataset['observations'])
+        batch['low_goals'] = jax.tree_map(lambda arr: arr[way_indx], self.dataset['observations']) # t+k
 
         distance = np.random.rand(batch_size)
 
         high_traj_goal_indx = np.round((np.minimum(indx + 1, final_state_indx) * distance + final_state_indx * (1 - distance))).astype(int)
         high_traj_target_indx = np.minimum(indx + self.way_steps, high_traj_goal_indx)
 
-        high_random_goal_indx = np.random.randint(self.dataset.size, size=batch_size)
-        high_random_target_indx = np.minimum(indx + self.way_steps, final_state_indx) #???
+        high_random_goal_indx = np.random.randint(self.dataset.size, size=batch_size) # - final state
+        high_random_target_indx = np.minimum(indx + self.way_steps, final_state_indx)
 
         pick_random = (np.random.rand(batch_size) < self.high_p_randomgoal)
         high_goal_idx = np.where(pick_random, high_random_goal_indx, high_traj_goal_indx)

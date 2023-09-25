@@ -1,6 +1,7 @@
 import dataclasses
 import equinox as eqx
 import optax
+import jax
 
 class TrainState(eqx.Module):
     model: eqx.Module
@@ -8,10 +9,13 @@ class TrainState(eqx.Module):
     optim_state: optax.OptState
 
     @classmethod
-    def create(cls, *, model, optim, **kwargs):
-        optim_state = optim.init(eqx.filter(model, eqx.is_array))
+    def create(cls, model, optim, **kwargs):
+        if optim is not None:
+            optim_state = optim.init(eqx.filter(model, eqx.is_array))
+        else:
+            optim_state=None
         return cls(model, optim, optim_state, **kwargs)
-
+    
     def apply_updates(self, grads):
         updates, new_optim_state = self.optim.update(grads, self.optim_state)
         new_model = eqx.apply_updates(self.model, updates)
@@ -21,7 +25,7 @@ class TrainState(eqx.Module):
             optim_state=new_optim_state
         )
         
-class CriticTrainState(TrainState):
+class TargetTrainState(TrainState):
     target_model: eqx.Module
 
     def soft_update(self, tau):
