@@ -10,17 +10,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from functools import partial
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 import gym
 import d4rl
 import numpy as np
-import functools as ft
+import wandb
 
-# from src import roomworld_utils
 from .d4rl_ant import get_canvas_image
-from jaxrl_m.dataset import Dataset
-import os
 import os.path as osp
 
 class Visualizer:
@@ -76,7 +72,11 @@ class Visualizer:
             'masked_average_advantage': np.mean(goods * masks) / np.mean(masks),
             'masked_pct_aligned': np.mean((goods > 0) * masks) / np.mean(masks),
         }
-
+        
+    def icvf_generate_debug_plots(self, agent, example_trajectory):
+        pass
+    
+    
     def is_goods(self, directions):
         X, Y = self.data['X'][::self.K], self.data['Y'][::self.K]
         directions = directions.reshape((len(Y), len(X), 2))

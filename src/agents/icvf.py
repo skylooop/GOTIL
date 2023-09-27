@@ -12,35 +12,30 @@ from jaxrl_m.eqx_common import TrainState, TargetTrainState
 from typing import *
 import ml_collections
 
-def expectile_loss(adv, diff, expectile=0.85):
+def expectile_loss(adv, diff, expectile=0.9):
     weight = jnp.where(adv >= 0, expectile, (1 - expectile))
     return weight * diff ** 2
 
-def icvf_loss(value_fn, agent, batch):
-    discount = 0.9
-    (next_v1_gz, next_v2_gz) = agent.evaluate_ensemble(agent.target_value.model, batch['next_observations'], batch['high_targets'], batch['high_goals'])
+def icvf_loss(value_fn, agent, batch, expectile: float = 0.9):
+    discount = 0.95
+    (next_v1_gz, next_v2_gz) = agent.evaluate_ensemble(agent.target_value.target_model, batch['next_observations'], batch['icvf_goals'], batch['icvf_desired_goals'])
     q1_gz = batch['rewards'] + discount * batch['masks'] * next_v1_gz
     q2_gz = batch['rewards'] + discount * batch['masks'] * next_v2_gz
     q1_gz, q2_gz = jax.lax.stop_gradient(q1_gz), jax.lax.stop_gradient(q2_gz)
 
-    (v1_gz, v2_gz) = agent.evaluate_ensemble(value_fn, batch['observations'], batch['high_targets'], batch['high_goals'])
+    (v1_gz, v2_gz) = agent.evaluate_ensemble(value_fn, batch['observations'], batch['icvf_goals'], batch['icvf_desired_goals'])
 
-    ###
-    # Compute the advantage of s -> s' under z
-    # r(s, z) + V(s', z, z) - V(s, z, z)
-    ###
-
-    (next_v1_zz, next_v2_zz) = agent.evaluate_ensemble(agent.target_value.model, batch['next_observations'], batch['high_targets'], batch['high_goals'])
+    (next_v1_zz, next_v2_zz) = agent.evaluate_ensemble(agent.target_value.target_model, batch['next_observations'], batch['icvf_goals'], batch['icvf_desired_goals'])
     next_v_zz = (next_v1_zz + next_v2_zz) / 2
     
-    q_zz = batch['desired_rewards'] + discount * batch['masks'] * next_v_zz
+    q_zz = batch['icvf_desired_rewards'] + discount * batch['icvf_desired_masks'] * next_v_zz
 
-    (v1_zz, v2_zz) = agent.evaluate_ensemble(agent.target_value.model, batch['observations'], batch['high_goals'], batch['high_goals'])
+    (v1_zz, v2_zz) = agent.evaluate_ensemble(agent.target_value.target_model, batch['observations'], batch['icvf_desired_goals'], batch['icvf_desired_goals'])
     v_zz = (v1_zz + v2_zz) / 2
     adv = q_zz - v_zz
     
-    value_loss1 = expectile_loss(adv, q1_gz-v1_gz, 0.85).mean()
-    value_loss2 = expectile_loss(adv, q2_gz-v2_gz, 0.85).mean()
+    value_loss1 = expectile_loss(adv, q1_gz-v1_gz, expectile).mean()
+    value_loss2 = expectile_loss(adv, q2_gz-v2_gz, expectile).mean()
     value_loss = value_loss1 + value_loss2
 
     def masked_mean(x, mask):
@@ -59,7 +54,6 @@ def icvf_loss(value_fn, agent, batch):
         'adv min': advantage.min(),
         'accept prob': (advantage >= 0).mean(),
         'reward mean': batch['rewards'].mean(),
-        'mask mean': batch['masks'].mean(),
         'q_gz max': q1_gz.max(),
         'value_loss1': masked_mean((q1_gz-v1_gz)**2, batch['masks']), # Loss on s \neq s_+
         'value_loss2': masked_mean((q1_gz-v1_gz)**2, 1.0 - batch['masks']), # Loss on s = s_+
@@ -70,21 +64,27 @@ class ICVF_Multilinear(eqx.Module):
     phi_net: eqx.Module
     psi_net: eqx.Module
     T_net: eqx.Module
+    psi_ln: eqx.Module
+    phi_ln: eqx.Module
     
-    def __init__(self, key, in_size, hidden_dims, use_layer_norm: bool = False):
+    def __init__(self, key, in_size, hidden_dims, use_layer_norm: bool = True):
         phi_key, psi_key, t_key = jax.random.split(key, 3)
         
         self.phi_net = nn.MLP(in_size=in_size, out_size=hidden_dims[-1],
                               depth=len(hidden_dims), width_size=hidden_dims[0], key=phi_key)
+        self.phi_ln = nn.LayerNorm(hidden_dims[-1])
+        
         self.psi_net = nn.MLP(in_size=in_size, out_size=hidden_dims[-1],
                               depth=len(hidden_dims), width_size=hidden_dims[0], key=psi_key)
+        self.psi_ln = nn.LayerNorm(hidden_dims[-1])
+        
         self.T_net = nn.MLP(in_size=hidden_dims[-1], out_size=hidden_dims[-1],
                               depth=len(hidden_dims), width_size=hidden_dims[0], key=t_key)
         
     def __call__(self, s, s_plus, intent):
-        phi = self.phi_net(s)
-        psi = self.psi_net(s_plus)
-        z = self.psi_net(intent) # psi(s_z), s_z here is just subset of state space
+        phi = self.phi_ln(self.phi_net(s))
+        psi = self.psi_ln(self.psi_net(s_plus))
+        z = self.psi_net(intent) # z = psi(s_z), s_z here like in paper subset of state space
         T_z = self.T_net(z)
         
         return phi @ jnp.multiply(T_z, psi.T)
@@ -103,7 +103,7 @@ class ICVF_Agent(eqx.Module):
     def pretrain_update(agent, batch, seed=None):
         (val, aux_data), grads = eqx.filter_value_and_grad(agent.loss_fn, has_aux=True)(agent.value.model, agent, batch)
         new_value = agent.value.apply_updates(grads)
-        new_target = agent.target_value.soft_update(tau=0.05)
+        new_target = agent.target_value.soft_update(value_fn=new_value, tau=0.05)
         return dataclasses.replace(agent, value=new_value, target_value=new_target), aux_data
     
 def create_learner(
@@ -112,7 +112,7 @@ def create_learner(
     hidden_dims: Sequence[int] = (256, 256)
 ):
     rng = jax.random.PRNGKey(seed)
-    model_num = jax.random.split(rng, 2)
+    model_num = jax.random.split(rng, 2) # for ensemble
     
     @eqx.filter_vmap
     def ensemblize(keys):

@@ -102,18 +102,28 @@ class GCSDataset(GCDataset):
             indx = np.random.randint(self.dataset.size-1, size=batch_size)
 
         batch = self.dataset.sample(batch_size, indx)
+        
         goal_indx = self.sample_goals(indx)
         desired_goal_indx = self.sample_goals(indx)
+        
+        icvf_goal_indx = np.where(np.random.rand(batch_size) < 0.5, desired_goal_indx, goal_indx)
+        icvf_goal_indx = np.clip(icvf_goal_indx, 0, self.dataset.size-1)
+        desired_goal_indx = np.clip(desired_goal_indx, 0, self.dataset.size-1)
+        batch['icvf_goals'] = jax.tree_map(lambda arr: arr[goal_indx], self.dataset['observations'])
+        batch['icvf_desired_goals'] = jax.tree_map(lambda arr: arr[desired_goal_indx], self.dataset['observations'])
+        
         success = (indx == goal_indx)
         desired_success = (indx == desired_goal_indx)
+        
         batch['rewards'] = success.astype(float) * self.reward_scale + self.reward_shift
-        batch['desired_rewards'] = desired_success.astype(float) * self.reward_scale + self.reward_shift
+        batch['icvf_desired_rewards'] = desired_success.astype(float) * self.reward_scale + self.reward_shift
         
         if self.terminal:
             batch['masks'] = (1.0 - success.astype(float)) # no termination after achieved current goal
+            batch['icvf_desired_masks'] = (1.0 - desired_success.astype(float))
         else:
             batch['masks'] = np.ones(batch_size)
-
+            batch['icvf_desired_masks'] = np.ones(batch_size)
         batch['goals'] = jax.tree_map(lambda arr: arr[goal_indx], self.dataset['observations'])
 
         final_state_indx = self.terminal_locs[np.searchsorted(self.terminal_locs, indx)]

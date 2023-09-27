@@ -22,6 +22,7 @@ from jaxrl_m.evaluation import supply_rng, evaluate_with_trajectories, EpisodeMo
 
 from ml_collections import config_flags
 import pickle
+import equinox as eqx
 
 from src.utils import record_video, CsvLogger
 
@@ -66,34 +67,30 @@ flags.DEFINE_string('algo_name', "hiql", '')
 wandb_config = default_wandb_config()
 wandb_config.update({
     'project': 'RLJAX',
-    'group': 'baseline',
+    'group': 'ICVF_Equinox',
     'name': '{env_name}',
 })
 
 config_flags.DEFINE_config_dict('wandb', wandb_config, lock_config=False)
-# if FLAGS.algo_name == "hiql":
-#     config_flags.DEFINE_config_dict('config', hiql.get_default_config(), lock_config=False)
-# elif FLAGS.algo_name == "cilot":
-#     config_flags.DEFINE_config_dict('config', cilot.get_default_config(), lock_config=False)
 
 gcdataset_config = GCSDataset.get_default_config()
 config_flags.DEFINE_config_dict('gcdataset', gcdataset_config, lock_config=False)
 
-
-@jax.jit
+@eqx.filter_jit
 def get_debug_statistics(agent, batch):
-    def get_info(s, g):
-        return agent.network(s, g, info=True, method='value')
+    def get_info(s, s_plus, intent):
+        return agent.evaluate_ensemble(agent.value.model, s, s_plus, intent)
 
     s = batch['observations']
-    g = batch['goals']
-
-    info = get_info(s, g)
-
+    s_plus = batch['icvf_goals']
+    intent = batch['icvf_desired_goals']
+    info1, info2 = get_info(s, s_plus, intent)
+    v_s1, v_s2 = get_info(s, intent, intent)
+    
     stats = {}
-
     stats.update({
-        'v': info['v'].mean(),
+        'ICVF': (info1 + info2).mean(),
+        'V_function': (v_s1 + v_s2).mean()
     })
 
     return stats
@@ -104,11 +101,22 @@ def get_gcvalue(agent, s, g):
     v1, v2 = agent.network(s, g, method='value')
     return (v1 + v2) / 2
 
-
 def get_v(agent, goal, observations):
     goal = jnp.tile(goal, (observations.shape[0], 1))
     return get_gcvalue(agent, observations, goal)
 
+@eqx.filter_jit
+def get_traj_icvf(agent, trajectory):
+    def get_v(s, intent):
+        return agent.evaluate_ensemble(agent.value.model, jax.tree_map(lambda x: x[None], s), jax.tree_map(lambda x: x[None], intent),
+                                         jax.tree_map(lambda x: x[None], intent)).mean()
+    observations = trajectory['observations']
+    all_values = jax.vmap(jax.vmap(get_v, in_axes=(None, 0)), in_axes=(0, None))(observations, observations)
+    return {
+        'dist_to_beginning': all_values[:, 0],
+        'dist_to_end': all_values[:, -1],
+        'dist_to_middle': all_values[:, all_values.shape[1] // 2],
+    }
 
 @jax.jit
 def get_traj_v(agent, trajectory):
@@ -123,11 +131,10 @@ def get_traj_v(agent, trajectory):
         'dist_to_middle': all_values[:, all_values.shape[1] // 2],
     }
 
-
 def main(_):
     exp_name = ''
     exp_name += f'{FLAGS.wandb["name"]}'
-    
+
     if FLAGS.algo_name == "hiql":
         config_flags.DEFINE_config_dict('config', hiql.get_default_config(), lock_config=False)
     elif FLAGS.algo_name == "icvf":
@@ -166,7 +173,6 @@ def main(_):
     discrete = False
     if 'antmaze' in FLAGS.env_name:
         env_name = FLAGS.env_name
-
         if 'ultra' in FLAGS.env_name:
             import d4rl_ext
             import gym
@@ -305,8 +311,7 @@ def main(_):
     train_logger = CsvLogger(os.path.join(FLAGS.save_dir, 'train.csv'))
     eval_logger = CsvLogger(os.path.join(FLAGS.save_dir, 'eval.csv'))
     if FLAGS.algo_name == "hiql":
-        agent = hiql.create_learner(
-                                    FLAGS.seed,
+        agent = hiql.create_learner(FLAGS.seed,
                                     example_batch['observations'],
                                     example_batch['actions'] if not discrete else example_action,
                                     visual=FLAGS.visual,
@@ -316,8 +321,7 @@ def main(_):
                                     rep_type=FLAGS.rep_type,
                                     **FLAGS.config)
     elif FLAGS.algo_name == "icvf":
-        agent = icvf.create_learner(
-                                    FLAGS.seed,
+        agent = icvf.create_learner(FLAGS.seed,
                                     example_batch['observations'])
     elif FLAGS.algo_name == "cilot":
         agent = cilot.create_learner(FLAGS.seed,
@@ -338,12 +342,27 @@ def main(_):
         if i % FLAGS.log_interval == 0:
             debug_statistics = get_debug_statistics(agent, pretrain_batch)
             train_metrics = {f'training/{k}': v for k, v in update_info.items()}
-            train_metrics.update({f'pretraining/debug/{k}': v for k, v in debug_statistics.items()})
+            train_metrics.update({f'training_stats/{k}': v for k, v in debug_statistics.items()})
 
             wandb.log(train_metrics, step=i)
             train_logger.log(train_metrics, step=i)
-
-        if i == 1 or i % FLAGS.eval_interval == 0:
+            
+        if i % FLAGS.log_interval == 0 and FLAGS.algo_name == "icvf":
+            # intent_set_indx = np.random.default_rng(0).choice(dataset.size, FLAGS.config.n_intents, replace=False)
+            intent_set_indx = np.array([184588, 62200, 162996, 110214, 4086, 191369, 92549, 12946, 192021])
+            # intent_set_batch = pretrain_dataset.sample(9, indx=intent_set_indx)
+            # visualizations = viz.icvf_generate_debug_plots(agent, example_trajectory)
+            
+            eval_metrics = {}
+            traj_metrics = get_traj_icvf(agent, example_trajectory)
+            value_viz = viz_utils.make_visual_no_image(
+                traj_metrics,
+                [partial(viz_utils.visualize_metric, metric_name=k) for k in traj_metrics.keys()]
+            )
+            eval_metrics['value_traj_viz'] = wandb.Image(value_viz)
+            wandb.log(eval_metrics, step=i)
+            
+        if (i == 1 or i % FLAGS.eval_interval == 0) and FLAGS.algo_name != "icvf":
             policy_fn = partial(supply_rng(agent.sample_actions), discrete=discrete)
             high_policy_fn = partial(supply_rng(agent.sample_high_actions))
             policy_rep_fn = agent.get_policy_rep
@@ -397,7 +416,6 @@ def main(_):
 
             wandb.log(eval_metrics, step=i)
             eval_logger.log(eval_metrics, step=i)
-
         if i % FLAGS.save_interval == 0:
             save_dict = dict(
                 agent=flax.serialization.to_state_dict(agent),

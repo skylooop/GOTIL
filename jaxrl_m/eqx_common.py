@@ -28,12 +28,13 @@ class TrainState(eqx.Module):
 class TargetTrainState(TrainState):
     target_model: eqx.Module
 
-    def soft_update(self, tau):
+    def soft_update(self, value_fn, tau):
         model_params = eqx.filter(self.model, eqx.is_array)
         target_model_params, target_model_static = eqx.partition(self.target_model, eqx.is_array)
 
         new_target_params = optax.incremental_update(model_params, target_model_params, tau)
         return dataclasses.replace(
             self,
+            model=value_fn.model,
             target_model=eqx.combine(new_target_params, target_model_static)
         )
