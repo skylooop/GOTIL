@@ -95,6 +95,15 @@ def get_debug_statistics(agent, batch):
 
     return stats
 
+@eqx.filter_jit
+def get_gcvalue_icvf(agent, s, g, z):
+    v1, v2 = agent.evaluate_ensemble(agent.value.model, s, g, z)
+    return (v1 + v2) / 2
+
+def get_v_zz(agent, goal, observations):
+    goal = jnp.tile(goal, (observations.shape[0], 1))
+    return get_gcvalue_icvf(agent, observations, goal, goal)
+
 
 @jax.jit
 def get_gcvalue(agent, s, g):
@@ -360,6 +369,12 @@ def main(_):
                 [partial(viz_utils.visualize_metric, metric_name=k) for k in traj_metrics.keys()]
             )
             eval_metrics['value_traj_viz'] = wandb.Image(value_viz)
+            image_v = d4rl_ant.gcvalue_image(
+                    viz_env,
+                    viz_dataset,
+                    partial(get_v_zz, agent),
+                )
+            eval_metrics['V function'] = wandb.Image(image_v)
             wandb.log(eval_metrics, step=i)
             
         if (i == 1 or i % FLAGS.eval_interval == 0) and FLAGS.algo_name != "icvf":
@@ -416,16 +431,16 @@ def main(_):
 
             wandb.log(eval_metrics, step=i)
             eval_logger.log(eval_metrics, step=i)
-        if i % FLAGS.save_interval == 0:
-            save_dict = dict(
-                agent=flax.serialization.to_state_dict(agent),
-                config=FLAGS.config.to_dict()
-            )
+        # if i % FLAGS.save_interval == 0:
+        #     save_dict = dict(
+        #         agent=flax.serialization.to_state_dict(agent),
+        #         config=FLAGS.config.to_dict()
+        #     )
 
-            fname = os.path.join(FLAGS.save_dir, f'params_{i}.pkl')
-            print(f'Saving to {fname}')
-            with open(fname, "wb") as f:
-                pickle.dump(save_dict, f)
+        #     fname = os.path.join(FLAGS.save_dir, f'params_{i}.pkl')
+        #     print(f'Saving to {fname}')
+        #     with open(fname, "wb") as f:
+        #         pickle.dump(save_dict, f)
     train_logger.close()
     eval_logger.close()
 

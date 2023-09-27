@@ -139,7 +139,7 @@ def get_env_and_dataset(env_name):
     dataset = Dataset.create(**dataset)
     return env, dataset
 
-def plot_value(env, dataset, value_fn, fig, ax, N=20, random=True, title=None):
+def plot_value(env, dataset, value_fn, fig, ax, N=20, random=False, title=None):
     observations = env.XY(n=N)
 
     if random:
