@@ -1,5 +1,3 @@
-## Overview
-This is the official implementation of **Hierarchical Implicit Q-Learning** (**HIQL**).
 Run with 
 ```
 python main.py --flagfile=configs.antmaze-large.cfg
@@ -7,10 +5,6 @@ python main.py --flagfile=configs.antmaze-large.cfg
 ## Installation
 
 ```
-conda create --name hiql python=3.8
-conda activate hiql
-pip install -r requirements.txt --no-deps
-pip install "jax[cuda11_cudnn82]==0.4.3" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 
 # Install CALVIN (optional)
 # Download `calvin.gz` (dataset) following the instructions at https://github.com/clvrai/skimo and place it in the `data` directory.
@@ -89,7 +83,3 @@ python main.py --run_group EXP --seed 0 --env_name procgen-500 --pretrain_steps 
 # GCBC on procgen-500
 python main.py --run_group EXP --seed 0 --env_name procgen-500 --pretrain_steps 500002 --eval_interval 50000 --save_interval 250000 --p_currgoal 0.2 --p_trajgoal 0.5 --p_randomgoal 0.3 --discount 0.99 --temperature 0 --high_temperature 0 --pretrain_expectile 0.7 --geom_sample 1 --use_layer_norm 1 --value_hidden_dim 512 --value_num_layers 3 --batch_size 256 --visual 1 --encoder impala --use_rep 1 --policy_train_rep 1 --rep_dim 10 --rep_type concat --algo_name gcbc --use_waypoints 0 --way_steps 1 --high_p_randomgoal 0
 ```
-
-## License
-
-MIT
