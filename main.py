@@ -77,7 +77,7 @@ gcdataset_config = GCSDataset.get_default_config()
 config_flags.DEFINE_config_dict('gcdataset', gcdataset_config, lock_config=False)
 
 @eqx.filter_jit
-def get_debug_statistics(agent, batch):
+def get_debug_statistics_icvf(agent, batch):
     def get_info(s, s_plus, intent):
         return agent.evaluate_ensemble(agent.value.model, s, s_plus, intent)
 
@@ -91,6 +91,24 @@ def get_debug_statistics(agent, batch):
     stats.update({
         'ICVF': (info1 + info2).mean(),
         'V_function': (v_s1 + v_s2).mean()
+    })
+
+    return stats
+
+@jax.jit
+def get_debug_statistics(agent, batch):
+    def get_info(s, g):
+        return agent.network(s, g, info=True, method='value')
+
+    s = batch['observations']
+    g = batch['goals']
+
+    info = get_info(s, g)
+
+    stats = {}
+
+    stats.update({
+        'v': info['v'].mean(),
     })
 
     return stats
@@ -349,7 +367,10 @@ def main(_):
         agent, update_info = supply_rng(agent.pretrain_update)(pretrain_batch)
 
         if i % FLAGS.log_interval == 0:
-            debug_statistics = get_debug_statistics(agent, pretrain_batch)
+            if FLAGS.algo_name == "icvf":
+                debug_statistics = get_debug_statistics_icvf(agent, pretrain_batch)
+            else:
+                debug_statistics = get_debug_statistics(agent, pretrain_batch)
             train_metrics = {f'training/{k}': v for k, v in update_info.items()}
             train_metrics.update({f'training_stats/{k}': v for k, v in debug_statistics.items()})
 
@@ -441,8 +462,6 @@ def main(_):
         #     print(f'Saving to {fname}')
         #     with open(fname, "wb") as f:
         #         pickle.dump(save_dict, f)
-    train_logger.close()
-    eval_logger.close()
 
 
 if __name__ == '__main__':
