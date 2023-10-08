@@ -192,11 +192,11 @@ def main(_):
         else:
             env = d4rl_utils.make_env(env_name)
         
-        # Test on random noisy data
+        # offline ds - random noisy data
         # think about mismatch, when there can be different actions
-        dataset = get_dataset("d4rl_ext/antmaze_demos/antmaze-umaze-v2-randomstart-noiserandomaction.hdf5")
-
-        dataset = d4rl_utils.get_dataset(env, FLAGS.env_name, dataset=dataset) # each trajectory consists of 1k steps
+        offline_dataset = get_dataset("d4rl_ext/antmaze_demos/antmaze-umaze-v2-randomstart-noiserandomaction.hdf5")
+        offline_dataset = d4rl_utils.get_dataset(env, FLAGS.env_name, dataset=offline_dataset)
+        dataset = d4rl_utils.get_dataset(env, FLAGS.env_name) # each trajectory consists of 1k steps
         dataset = dataset.copy({'rewards': dataset['rewards'] - 1.0})
         
         env.render(mode='rgb_array', width=200, height=200)
