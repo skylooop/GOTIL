@@ -53,10 +53,9 @@ def icvf_loss(value_fn, agent, batch, expectile: float = 0.9):
         'adv max': advantage.max(),
         'adv min': advantage.min(),
         'accept prob': (advantage >= 0).mean(),
-        'reward mean': batch['rewards'].mean(),
+        'reward mean': batch['icvf_desired_rewards'].mean(),
         'q_gz max': q1_gz.max(),
         'value_loss1': masked_mean((q1_gz-v1_gz)**2, batch['masks']), # Loss on s \neq s_+
-        'value_loss2': masked_mean((q1_gz-v1_gz)**2, 1.0 - batch['masks']), # Loss on s = s_+
     }
 
 
@@ -80,11 +79,11 @@ class ICVF_Multilinear(eqx.Module):
         
         self.T_net = nn.MLP(in_size=hidden_dims[-1], out_size=hidden_dims[-1],
                               depth=len(hidden_dims), width_size=hidden_dims[0], key=t_key)
-        
+    
     def __call__(self, s, s_plus, intent):
         phi = self.phi_ln(self.phi_net(s))
         psi = self.psi_ln(self.psi_net(s_plus))
-        z = self.psi_net(intent) # z = psi(s_z), s_z here like in paper subset of state space
+        z = self.psi_net(intent) # z = psi(s_z), s_z here like in paper subset of state space (s_z - some state)
         T_z = self.T_net(z)
         
         return phi @ jnp.multiply(T_z, psi.T)

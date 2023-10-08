@@ -15,7 +15,7 @@ import tqdm
 from src.agents import hiql, cilot, icvf
 from src import d4rl_utils, d4rl_ant, ant_diagnostics, viz_utils
 from src.gc_dataset import GCSDataset
-
+from d4rl_ext.generate_antmaze_random import get_dataset
 from jaxrl_m.wandb import setup_wandb, default_wandb_config
 import wandb
 from jaxrl_m.evaluation import supply_rng, evaluate_with_trajectories, EpisodeMonitor
@@ -24,7 +24,9 @@ from ml_collections import config_flags
 import pickle
 import equinox as eqx
 
-from src.utils import record_video, CsvLogger
+from src.utils import record_video
+
+
 
 FLAGS = flags.FLAGS 
 flags.DEFINE_string('env_name', 'antmaze-large-diverse-v2', '') #antmaze-large-diverse-v2
@@ -98,7 +100,7 @@ def get_debug_statistics(agent, batch):
 @eqx.filter_jit
 def get_gcvalue_icvf(agent, s, g, z):
     v1, v2 = agent.evaluate_ensemble(agent.value.model, s, g, z)
-    return (v1 + v2) / 2
+    return (v1 + v2) / 2.
 
 def get_v_zz(agent, goal, observations):
     goal = jnp.tile(goal, (observations.shape[0], 1))
@@ -189,14 +191,15 @@ def main(_):
             env = EpisodeMonitor(env)
         else:
             env = d4rl_utils.make_env(env_name)
+        
+        # Test on random noisy data
+        # think about mismatch, when there can be different actions
+        dataset = get_dataset("d4rl_ext/antmaze_demos/antmaze-umaze-v2-randomstart-noiserandomaction.hdf5")
 
-        dataset = d4rl_utils.get_dataset(env, FLAGS.env_name) # each trajectory consists of 1k steps
+        dataset = d4rl_utils.get_dataset(env, FLAGS.env_name, dataset=dataset) # each trajectory consists of 1k steps
         dataset = dataset.copy({'rewards': dataset['rewards'] - 1.0})
         
-        ## for headless server
-        os.environ["CUDA_VISIBLE_DEVICES"]="4"
         env.render(mode='rgb_array', width=200, height=200)
-        os.environ["CUDA_VISIBLE_DEVICES"]="0,1,2,3"
         if 'large' in FLAGS.env_name:
             env.viewer.cam.lookat[0] = 18
             env.viewer.cam.lookat[1] = 12
@@ -317,8 +320,6 @@ def main(_):
     else:
         raise NotImplementedError
 
-    train_logger = CsvLogger(os.path.join(FLAGS.save_dir, 'train.csv'))
-    eval_logger = CsvLogger(os.path.join(FLAGS.save_dir, 'eval.csv'))
     if FLAGS.algo_name == "hiql":
         agent = hiql.create_learner(FLAGS.seed,
                                     example_batch['observations'],
@@ -354,13 +355,10 @@ def main(_):
             train_metrics.update({f'training_stats/{k}': v for k, v in debug_statistics.items()})
 
             wandb.log(train_metrics, step=i)
-            train_logger.log(train_metrics, step=i)
             
         if i % FLAGS.log_interval == 0 and FLAGS.algo_name == "icvf":
             # intent_set_indx = np.random.default_rng(0).choice(dataset.size, FLAGS.config.n_intents, replace=False)
-            intent_set_indx = np.array([184588, 62200, 162996, 110214, 4086, 191369, 92549, 12946, 192021])
-            # intent_set_batch = pretrain_dataset.sample(9, indx=intent_set_indx)
-            # visualizations = viz.icvf_generate_debug_plots(agent, example_trajectory)
+            #intent_indx = np.array([184588, 62200, 162996, 110214, 4086, 191369, 92549, 12946, 192021])
             
             eval_metrics = {}
             traj_metrics = get_traj_icvf(agent, example_trajectory)
@@ -374,10 +372,17 @@ def main(_):
                     viz_dataset,
                     partial(get_v_zz, agent),
                 )
+            image_icvf = d4rl_ant.gcicvf_image(
+                    viz_env,
+                    viz_dataset,
+                    partial(get_gcvalue_icvf, agent),
+                    #intent_indx
+                )
+            eval_metrics['ICVF function'] = wandb.Image(image_icvf)
             eval_metrics['V function'] = wandb.Image(image_v)
             wandb.log(eval_metrics, step=i)
             
-        if (i == 1 or i % FLAGS.eval_interval == 0) and FLAGS.algo_name != "icvf":
+        if (i == 1 or i % FLAGS.eval_interval == 0) and FLAGS.algo_name == "hiql":
             policy_fn = partial(supply_rng(agent.sample_actions), discrete=discrete)
             high_policy_fn = partial(supply_rng(agent.sample_high_actions))
             policy_rep_fn = agent.get_policy_rep
@@ -430,7 +435,6 @@ def main(_):
                 eval_metrics['v'] = wandb.Image(image_v)
 
             wandb.log(eval_metrics, step=i)
-            eval_logger.log(eval_metrics, step=i)
         # if i % FLAGS.save_interval == 0:
         #     save_dict = dict(
         #         agent=flax.serialization.to_state_dict(agent),
@@ -441,8 +445,6 @@ def main(_):
         #     print(f'Saving to {fname}')
         #     with open(fname, "wb") as f:
         #         pickle.dump(save_dict, f)
-    train_logger.close()
-    eval_logger.close()
 
 
 if __name__ == '__main__':

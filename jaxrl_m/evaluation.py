@@ -157,9 +157,7 @@ def evaluate_with_trajectories(
                 if i >= num_episodes and step % 3 == 0:
                     if 'antmaze' in env_name:
                         size = 200
-                        os.environ["CUDA_VISIBLE_DEVICES"]="4"
                         cur_frame = env.render(mode='rgb_array', width=size, height=size).transpose(2, 0, 1).copy()
-                        os.environ["CUDA_VISIBLE_DEVICES"]="0,1,2,3"
                         if use_waypoints and not config['use_rep'] and ('large' in env_name or 'ultra' in env_name):
                             def xy_to_pixxy(x, y):
                                 if 'large' in env_name:

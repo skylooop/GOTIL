@@ -307,7 +307,58 @@ def gcvalue_image(env, dataset, value_fn):
         plot_value(env, dataset, partial(value_fn, goal_observation), fig, ax)
 
         ax.set_title('Goal: ({:.2f}, {:.2f})'.format(point[0], point[1])) 
-        ax.scatter(point[0], point[1], s=50, c='red', marker='*')
+        ax.scatter(point[0], point[1], s=50, c='red', marker='*') # goals
+
+    image = get_canvas_image(canvas)
+    plt.close(fig)
+    return image
+
+def plot_icvf_value(env, dataset, icvf_fn, fig, ax, N=20):
+    observations = env.XY(n=N) # coordinates from env
+    base_observation = np.copy(dataset['observations'][0])
+    base_observations = np.tile(base_observation, (observations.shape[0], 1))
+
+    base_observations[:, :2] = observations # project from obs into env coordinates
+
+    values = icvf_fn(g=base_observations)
+
+    x, y = observations[:, 0], observations[:, 1]
+    x = x.reshape(N, N)
+    y = y.reshape(N, N)
+    values = values.reshape(N, N)
+    mesh = ax.pcolormesh(x, y, values, cmap='viridis')
+    env.draw(ax)
+
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes('right', size='5%', pad=0.05)
+    fig.colorbar(mesh, cax=cax, orientation='vertical')
+
+
+def gcicvf_image(env, dataset, icvf_fn):
+    point1, point2, point3, point4 = env.four_goals()
+    point3 = (32.75, 24.75)
+    base_observation = dataset['observations'][0]
+
+    fig = plt.figure(tight_layout=True)
+    canvas = FigureCanvas(fig)
+    observations = env.XY(n=20)
+
+    points = [point1, point2, point3, point4]
+    for i, point in enumerate(points):
+        point = np.array(point)
+        ax = fig.add_subplot(2, 2, i + 1)
+
+        goal_observation = base_observation.copy()
+        goal_observation[:2] = point # make this s_z, i.e intent
+        goal_observation = np.tile(goal_observation, (observations.shape[0], 1))
+        random_s = dataset['observations'][np.random.choice(dataset.size, 1)]
+        random_s = np.tile(random_s, (observations.shape[0], 1))
+        plot_icvf_value(env, dataset, partial(icvf_fn, s=random_s, z=goal_observation), fig, ax)
+
+        ax.set_title('S_z: ({:.2f}, {:.2f})'.format(point[0], point[1])) 
+        ax.scatter(random_s[0][0], random_s[0][1], s=50, c='red', marker='8', label="initial state")
+        ax.scatter(point[0], point[1], s=50, c='blue', marker='+', label="intent")
+        ax.legend(loc=5)
 
     image = get_canvas_image(canvas)
     plt.close(fig)
