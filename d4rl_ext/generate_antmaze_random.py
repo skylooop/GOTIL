@@ -5,7 +5,7 @@ from d4rl.locomotion import maze_env, ant, swimmer
 from d4rl.locomotion.wrappers import NormalizedBoxEnv
 from PIL import Image
 import os
-import tqdm as tqdm
+from tqdm.auto import tqdm
 
 
 def get_keys(h5file):
@@ -26,7 +26,7 @@ def get_dataset(h5path):
                 data_dict[k] = dataset_file[k][:]
             except ValueError as e:  # try loading as a scalar
                 data_dict[k] = dataset_file[k][()]
-
+    data_dict['next_observations'] = data_dict['observations'][1:].copy()
     return data_dict
 
 def reset_data():
@@ -72,7 +72,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--noisy', action='store_true', help='Noisy actions')
     parser.add_argument('--maze', type=str, default='umaze', help='Maze type. umaze, medium, or large')
-    parser.add_argument('--num_samples', type=int, default=int(1e6), help='Num samples to collect')
+    parser.add_argument('--num_samples', type=int, default=int(300_000), help='Num samples to collect')
     parser.add_argument('--env', type=str, default='ant', help='Environment type')
     parser.add_argument('--policy_file', type=str, default='policy_file', help='file_name')
     parser.add_argument('--max_episode_steps', default=1000, type=int)

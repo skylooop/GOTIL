@@ -57,8 +57,10 @@ class TrainerCilotAgent(eqx.Module):
     pretrain_update = jax.jit(pretrain_update, static_argnums=(0, ))
     
 def create_learner(seed: int,
-                   observations: jnp.ndarray,
-                   use_rep: int = False, # for future VQVAE
+                   offline_ds,
+                   expert_ds,
+                   encoder,
+                   intention_book,
                    actor_hidden_dims: Sequence[int] = (256, 256),
                    value_hidden_dims: Sequence[int] = (256, 256),
                    discount: float = 0.99,
@@ -69,9 +71,6 @@ def create_learner(seed: int,
     rng = jax.random.PRNGKey(seed)
     rng, actor_key, value_key, encoder_key = jax.random.split(rng, 4)
     
-    if not use_rep:
-        encoder = SimpleEncoder(key=encoder_key, rep_dim=rep_dim,
-                                hidden_dim=encoder_hidden_dims[0], hidden_depth=len(encoder_hidden_dims))
 
 
 def get_default_config():

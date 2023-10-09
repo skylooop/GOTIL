@@ -53,9 +53,8 @@ def icvf_loss(value_fn, agent, batch, expectile: float = 0.9):
         'adv max': advantage.max(),
         'adv min': advantage.min(),
         'accept prob': (advantage >= 0).mean(),
-        'reward mean': batch['icvf_desired_rewards'].mean(),
-        'q_gz max': q1_gz.max(),
-        'value_loss1': masked_mean((q1_gz-v1_gz)**2, batch['masks']), # Loss on s \neq s_+
+        'reward mean': batch['rewards'].mean(),
+        'q_gz max': q1_gz.max()
     }
 
 
@@ -66,16 +65,20 @@ class ICVF_Multilinear(eqx.Module):
     psi_ln: eqx.Module
     phi_ln: eqx.Module
     
-    def __init__(self, key, in_size, hidden_dims, use_layer_norm: bool = True):
+    def __init__(self, key, in_size, hidden_dims, use_layer_norm: bool = False):
         phi_key, psi_key, t_key = jax.random.split(key, 3)
         
         self.phi_net = nn.MLP(in_size=in_size, out_size=hidden_dims[-1],
                               depth=len(hidden_dims), width_size=hidden_dims[0], key=phi_key)
-        self.phi_ln = nn.LayerNorm(hidden_dims[-1])
-        
+        if use_layer_norm:
+            self.phi_ln = nn.LayerNorm(hidden_dims[-1])
+            self.psi_ln = nn.LayerNorm(hidden_dims[-1])
+        else:
+            self.phi_ln = nn.Identity()
+            self.psi_ln = nn.Identity()
+
         self.psi_net = nn.MLP(in_size=in_size, out_size=hidden_dims[-1],
                               depth=len(hidden_dims), width_size=hidden_dims[0], key=psi_key)
-        self.psi_ln = nn.LayerNorm(hidden_dims[-1])
         
         self.T_net = nn.MLP(in_size=hidden_dims[-1], out_size=hidden_dims[-1],
                               depth=len(hidden_dims), width_size=hidden_dims[0], key=t_key)

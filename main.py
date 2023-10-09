@@ -8,14 +8,14 @@ from functools import partial
 import numpy as np
 import jax
 import jax.numpy as jnp
-import flax
 import gzip
 
 import tqdm
+
 from src.agents import hiql, cilot, icvf
 from src import d4rl_utils, d4rl_ant, ant_diagnostics, viz_utils
-from src.gc_dataset import GCSDataset
 from d4rl_ext.generate_antmaze_random import get_dataset
+from src.gc_dataset import GCSDataset
 from jaxrl_m.wandb import setup_wandb, default_wandb_config
 import wandb
 from jaxrl_m.evaluation import supply_rng, evaluate_with_trajectories, EpisodeMonitor
@@ -25,8 +25,6 @@ import pickle
 import equinox as eqx
 
 from src.utils import record_video
-
-
 
 FLAGS = flags.FLAGS 
 flags.DEFINE_string('env_name', 'antmaze-large-diverse-v2', '') #antmaze-large-diverse-v2
@@ -116,6 +114,8 @@ def get_v(agent, goal, observations):
     goal = jnp.tile(goal, (observations.shape[0], 1))
     return get_gcvalue(agent, observations, goal)
 
+
+# Some bug with positions
 @eqx.filter_jit
 def get_traj_icvf(agent, trajectory):
     def get_v(s, intent):
@@ -196,10 +196,11 @@ def main(_):
         # think about mismatch, when there can be different actions
         offline_dataset = get_dataset("d4rl_ext/antmaze_demos/antmaze-umaze-v2-randomstart-noiserandomaction.hdf5")
         offline_dataset = d4rl_utils.get_dataset(env, FLAGS.env_name, dataset=offline_dataset)
-        dataset = d4rl_utils.get_dataset(env, FLAGS.env_name) # each trajectory consists of 1k steps
+
+        dataset = d4rl_utils.get_dataset(env, FLAGS.env_name) # expert trajectories from D4RL
         dataset = dataset.copy({'rewards': dataset['rewards'] - 1.0})
-        
         env.render(mode='rgb_array', width=200, height=200)
+
         if 'large' in FLAGS.env_name:
             env.viewer.cam.lookat[0] = 18
             env.viewer.cam.lookat[1] = 12
@@ -210,6 +211,7 @@ def main(_):
             viz = ant_diagnostics.Visualizer(env_name, viz_env, viz_dataset, discount=FLAGS.discount)
             init_state = np.copy(viz_dataset['observations'][0])
             init_state[:2] = (12.5, 8)
+
         elif 'ultra' in FLAGS.env_name:
             env.viewer.cam.lookat[0] = 26
             env.viewer.cam.lookat[1] = 18
@@ -220,15 +222,18 @@ def main(_):
             env.viewer.cam.lookat[1] = 12
             env.viewer.cam.distance = 50
             env.viewer.cam.elevation = -90
+    
     elif 'kitchen' in FLAGS.env_name:
         env = d4rl_utils.make_env(FLAGS.env_name)
         dataset = d4rl_utils.get_dataset(env, FLAGS.env_name, filter_terminals=True)
         dataset = dataset.copy({'observations': dataset['observations'][:, :30], 'next_observations': dataset['next_observations'][:, :30]})
+    
     elif 'calvin' in FLAGS.env_name:
         from src.envs.calvin import CalvinEnv
         from hydra import compose, initialize
         from src.envs.gym_env import GymWrapper
         from src.envs.gym_env import wrap_env
+
         initialize(config_path='src/envs/conf')
         cfg = compose(config_name='calvin')
         env = CalvinEnv(**cfg)
@@ -303,7 +308,10 @@ def main(_):
         raise NotImplementedError
 
     env.reset()
-    pretrain_dataset = GCSDataset(dataset, **FLAGS.gcdataset.to_dict())
+    if FLAGS.algo_name != "cilot": # not GCRL
+        pretrain_dataset = GCSDataset(dataset, **FLAGS.gcdataset.to_dict())
+    else:
+        pretrain_dataset = dataset
     total_steps = FLAGS.pretrain_steps
     example_batch = dataset.sample(1)
         
@@ -335,12 +343,10 @@ def main(_):
                                     example_batch['observations'])
     elif FLAGS.algo_name == "cilot":
         agent = cilot.create_learner(FLAGS.seed,
-                                    example_batch['observations'],
-                                    example_batch['actions'] if not discrete else example_action,
-                                    visual=FLAGS.visual,
-                                    encoder=FLAGS.encoder,
-                                    discrete=discrete,
-                                    rep_type=FLAGS.rep_type,
+                                    offline_ds=offline_dataset,
+                                    expert_ds=dataset,
+                                    encoder=None,
+                                    intention_book="uniform", 
                                     **FLAGS.config)
         
     for i in tqdm.tqdm(range(1, total_steps + 1),

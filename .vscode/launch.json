@@ -5,6 +5,14 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "test_env",
+            "type": "python",
+            "request": "launch",
+            "program": "/home/simmax21/Desktop/GOTIL/ds_test.py",
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
             "name": "HIQL",
             "type": "python",
             "request": "launch",
