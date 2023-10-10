@@ -12,14 +12,14 @@ from jaxrl_m.eqx_common import TrainState, TargetTrainState
 from typing import *
 import ml_collections
 
-def expectile_loss(adv, diff, expectile=0.8):
+def expectile_loss(adv, diff, expectile):
     weight = jnp.where(adv >= 0, expectile, (1 - expectile))
     return weight * diff ** 2
 
-def icvf_loss(value_fn, agent, batch, expectile: float = 0.9, discount=0.95):
+def icvf_loss(value_fn, agent, batch, expectile: float = 0.8, discount: float = 0.95):
     (next_v1_gz, next_v2_gz) = agent.evaluate_ensemble(agent.target_value.target_model, batch['next_observations'], batch['icvf_goals'], batch['icvf_desired_goals'])
-    q1_gz = batch['rewards'] + discount * batch['masks'] * next_v1_gz
-    q2_gz = batch['rewards'] + discount * batch['masks'] * next_v2_gz
+    q1_gz = batch['icvf_rewards'] + discount * batch['icvf_masks'] * next_v1_gz
+    q2_gz = batch['icvf_rewards'] + discount * batch['icvf_masks'] * next_v2_gz
     q1_gz, q2_gz = jax.lax.stop_gradient(q1_gz), jax.lax.stop_gradient(q2_gz)
 
     (v1_gz, v2_gz) = agent.evaluate_ensemble(value_fn, batch['observations'], batch['icvf_goals'], batch['icvf_desired_goals'])

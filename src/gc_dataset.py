@@ -97,7 +97,7 @@ class GCSDataset(GCDataset):
             'terminal': False,
         })
 
-    def sample(self, batch_size: int, indx=None):
+    def sample(self, batch_size: int, indx=None, mode='icvf'):
         if indx is None:
             indx = np.random.randint(self.dataset.size-1, size=batch_size)
 
@@ -106,24 +106,35 @@ class GCSDataset(GCDataset):
         goal_indx = self.sample_goals(indx)
         desired_goal_indx = self.sample_goals(indx)
         
-        icvf_goal_indx = np.where(np.random.rand(batch_size) < 0.5, desired_goal_indx, goal_indx)
-        icvf_goal_indx = np.clip(icvf_goal_indx, 0, self.dataset.size-1)
-        desired_goal_indx = np.clip(desired_goal_indx, 0, self.dataset.size-1)
-        batch['icvf_goals'] = jax.tree_map(lambda arr: arr[goal_indx], self.dataset['observations'])
-        batch['icvf_desired_goals'] = jax.tree_map(lambda arr: arr[desired_goal_indx], self.dataset['observations'])
-        
+        if mode == "icvf":
+            icvf_goal_indx = self.sample_goals(indx)
+            icvf_desired_goal_indx = self.sample_goals(indx)
+            
+            icvf_goal_indx = np.clip(icvf_goal_indx, 0, self.dataset.size-1)
+            icvf_desired_goal_indx = np.clip(icvf_desired_goal_indx, 0, self.dataset.size-1)
+            icvf_goal_indx = np.where(np.random.rand(batch_size) < 0.5, icvf_desired_goal_indx, icvf_goal_indx)
+            
+            icvf_success = (indx == icvf_goal_indx) # intent
+            icvf_desired_success = (indx == icvf_desired_success) # final state, s+
+            
+            batch['icvf_rewards'] = success.astype(float) * self.reward_scale + self.reward_shift
+            batch['icvf_desired_rewards'] = icvf_desired_success.astype(float) * self.reward_scale + self.reward_shift
+            
+            batch['icvf_goals'] = jax.tree_map(lambda arr: arr[icvf_goal_indx], self.dataset['observations'])
+            batch['icvf_desired_goals'] = jax.tree_map(lambda arr: arr[desired_goal_indx], self.dataset['observations'])
+            
+            batch['icvf_masks'] = (1.0 - icvf_success.astype(float))
+            batch['icvf_desired_masks'] = (1.0 - desired_success.astype(float))
+
         success = (indx == goal_indx)
         desired_success = (indx == desired_goal_indx)
         
         batch['rewards'] = success.astype(float) * self.reward_scale + self.reward_shift
-        batch['icvf_desired_rewards'] = desired_success.astype(float) * self.reward_scale + self.reward_shift
         
         if self.terminal:
-            batch['masks'] = (1.0 - success.astype(float)) # no termination after achieved current goal
-            batch['icvf_desired_masks'] = (1.0 - desired_success.astype(float))
+            batch['masks'] = (1.0 - success.astype(float))
         else:
             batch['masks'] = np.ones(batch_size)
-            batch['icvf_desired_masks'] = np.ones(batch_size)
         batch['goals'] = jax.tree_map(lambda arr: arr[goal_indx], self.dataset['observations'])
 
         final_state_indx = self.terminal_locs[np.searchsorted(self.terminal_locs, indx)]
