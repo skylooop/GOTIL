@@ -34,7 +34,7 @@ flags.DEFINE_integer('seed', 0, '')
 flags.DEFINE_integer('eval_episodes', 50, '')
 flags.DEFINE_integer('num_video_episodes', 2, '')
 flags.DEFINE_integer('log_interval', 1000, '')
-flags.DEFINE_integer('eval_interval', 100000, '')
+flags.DEFINE_integer('eval_interval', 10000, '')
 flags.DEFINE_integer('save_interval', 100000, '')
 flags.DEFINE_integer('batch_size', 1024, '')
 flags.DEFINE_integer('pretrain_steps', 1000000, '')
@@ -308,11 +308,8 @@ def main(_):
         raise NotImplementedError
 
     env.reset()
-    if FLAGS.algo_name != "cilot": # not GCRL
-        pretrain_dataset = GCSDataset(dataset, **FLAGS.gcdataset.to_dict())
-    else:
-        pretrain_dataset = dataset
-    total_steps = FLAGS.pretrain_steps
+    pretrain_dataset = GCSDataset(dataset, **FLAGS.gcdataset.to_dict())
+    total_steps = FLAGS.pretrain_steps 
     example_batch = dataset.sample(1)
         
     if 'antmaze' in FLAGS.env_name:
@@ -342,26 +339,45 @@ def main(_):
         agent = icvf.create_learner(FLAGS.seed,
                                     example_batch['observations'])
     elif FLAGS.algo_name == "cilot":
-        agent = cilot.create_learner(FLAGS.seed,
-                                    offline_ds=offline_dataset,
-                                    expert_ds=dataset,
+        pretrain_offline_dataset = GCSDataset(offline_dataset, **FLAGS.gcdataset.to_dict())
+        joint_icvf = cilot.create_joint_learner(FLAGS.seed,
+                                    offline_ds_obs=offline_dataset['observations'],
+                                    expert_ds_obs=example_batch['observations'],
                                     encoder=None,
                                     intention_book="uniform", 
                                     **FLAGS.config)
-        
     for i in tqdm.tqdm(range(1, total_steps + 1),
                        smoothing=0.1,
                        dynamic_ncols=True):
+        
         pretrain_batch = pretrain_dataset.sample(FLAGS.batch_size)
-        agent, update_info = supply_rng(agent.pretrain_update)(pretrain_batch)
+        if FLAGS.algo_name == "cilot":
+            if i < total_steps / 2:
+                agent, update_info = joint_icvf.pretrain_expert(pretrain_batch)
+            else:
+                agent_batch_data = pretrain_offline_dataset.sample(FLAGS.batch_size)
+                agent, update_info = joint_icvf.pretrain_agent(agent_batch_data)
 
-        if i % FLAGS.log_interval == 0:
+        else:
+            agent, update_info = supply_rng(agent.pretrain_update)(pretrain_batch)
+
+        if i % FLAGS.log_interval == 0 and FLAGS.algo_name != "cilot":
             debug_statistics = get_debug_statistics(agent, pretrain_batch)
             train_metrics = {f'training/{k}': v for k, v in update_info.items()}
             train_metrics.update({f'training_stats/{k}': v for k, v in debug_statistics.items()})
-
             wandb.log(train_metrics, step=i)
-            
+        elif FLAGS.algo_name == "cilot" and i % FLAGS.log_interval == 0:
+            if agent.cur_processor == "expert":
+                name = "expert"
+                agent = agent.expert_icvf
+            else:
+                name = "agent"
+                agent = agent.agent_icvf
+            debug_statistics = get_debug_statistics(agent, pretrain_batch)
+            train_metrics = {f'training/{name}/{k}': v for k, v in update_info.items()}
+            train_metrics.update({f'training_stats/{name}/{k}': v for k, v in debug_statistics.items()})
+            wandb.log(train_metrics, step=i)
+
         if i % FLAGS.log_interval == 0 and FLAGS.algo_name == "icvf":
             # intent_set_indx = np.random.default_rng(0).choice(dataset.size, FLAGS.config.n_intents, replace=False)
             #intent_indx = np.array([184588, 62200, 162996, 110214, 4086, 191369, 92549, 12946, 192021])

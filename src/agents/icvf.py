@@ -12,12 +12,11 @@ from jaxrl_m.eqx_common import TrainState, TargetTrainState
 from typing import *
 import ml_collections
 
-def expectile_loss(adv, diff, expectile=0.9):
+def expectile_loss(adv, diff, expectile=0.8):
     weight = jnp.where(adv >= 0, expectile, (1 - expectile))
     return weight * diff ** 2
 
-def icvf_loss(value_fn, agent, batch, expectile: float = 0.9):
-    discount = 0.95
+def icvf_loss(value_fn, agent, batch, expectile: float = 0.9, discount=0.95):
     (next_v1_gz, next_v2_gz) = agent.evaluate_ensemble(agent.target_value.target_model, batch['next_observations'], batch['icvf_goals'], batch['icvf_desired_goals'])
     q1_gz = batch['rewards'] + discount * batch['masks'] * next_v1_gz
     q2_gz = batch['rewards'] + discount * batch['masks'] * next_v2_gz
@@ -37,9 +36,6 @@ def icvf_loss(value_fn, agent, batch, expectile: float = 0.9):
     value_loss1 = expectile_loss(adv, q1_gz-v1_gz, expectile).mean()
     value_loss2 = expectile_loss(adv, q2_gz-v2_gz, expectile).mean()
     value_loss = value_loss1 + value_loss2
-
-    def masked_mean(x, mask):
-        return (x * mask).sum() / (1e-5 + mask.sum())
 
     advantage = adv
     return value_loss, {

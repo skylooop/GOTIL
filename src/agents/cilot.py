@@ -10,55 +10,26 @@ import jax
 import jax.numpy as jnp
 from jaxrl_m.typing import *
 from jaxtyping import PyTree
+from jaxrl_m.evaluation import supply_rng
 
-class CilotAgent(eqx.Module):
-    encoders: Dict[str, eqx.Module]
-    networks: Dict[str, eqx.Module]
-    
-    def value(self, obs, goals):
-        if self.encoders['base_encoder'] is not None:
-            obs = eqx.filter_vmap(self.encoders['base_encoder'], in_axes=(eqx.if_array(0), None))(obs)
-            goals = eqx.filter_vmap(self.encoders['base_encoder'], in_axes=(eqx.if_array(0), None))(goals)
-        return eqx.filter_vmap(self.networks['value'])(obs, goals)
-    
-    def target_value(self, obs, goals):
-        if self.encoders['base_encoder'] is not None:
-            obs = eqx.filter_vmap(self.encoders['base_encoder'], in_axes=(eqx.if_array(0), None))(obs)
-            goals = eqx.filter_vmap(self.encoders['base_encoder'], in_axes=(eqx.if_array(0), None))(goals)
-        return eqx.filter_vmap(self.networks['target_value'])(obs, goals)
-    
-    def actor(self, obs):
-        if self.encoders['base_encoder'] is not None:
-            obs = eqx.filter_vmap(self.encoders['base_encoder'], in_axes=(eqx.if_array(0), None))(obs)
-        return eqx.filter_vmap(self.networks['actor'])(obs)
-    
-    def __call__(self, obs, goals):
-        return {
-            'value': self.value(obs, goals),
-            'target_value': self.value(obs, goals),
-            'actor': self.actor(obs)
-        }
+from src.agents.icvf import create_learner
 
-class TrainerCilotAgent(eqx.Module):
-    network: eqx.Module
-    target_update_rate: float = 5e-3
-        
-    def pretrain_update(self, pretrain_batch, seed=None):
-        def loss_fn():
-            info = {}
-            
-        self.network.model.networks['target_value'] = jax.tree_map(
-            lambda m, tp: m * self.target_update_rate + tp * (1 - self.target_update_rate), self.network.model.networks['value'], self.network.model.networks['target_value']
-        )
-        
-        
-        return dataclasses.replace(self,
-                                   network=new_network)
-    pretrain_update = jax.jit(pretrain_update, static_argnums=(0, ))
+class JointICVF(eqx.Module):
+    expert_icvf: eqx.Module
+    agent_icvf: eqx.Module
+    cur_processor: str = None
+
+    def pretrain_expert(self, batch):
+        new_expert_agent, update_info = supply_rng(self.expert_icvf.pretrain_update)(batch)
+        return dataclasses.replace(self, expert_icvf=new_expert_agent, cur_processor="expert"), update_info
     
-def create_learner(seed: int,
-                   offline_ds,
-                   expert_ds,
+    def pretrain_agent(self, batch):
+        new_agent, update_info = supply_rng(self.agent_icvf.pretrain_update)(batch)
+        return dataclasses.replace(self, agent_icvf=new_agent, cur_processor="agent"), update_info
+
+def create_joint_learner(seed: int,
+                   offline_ds_obs,
+                   expert_ds_obs,
                    encoder,
                    intention_book,
                    actor_hidden_dims: Sequence[int] = (256, 256),
@@ -69,9 +40,10 @@ def create_learner(seed: int,
                    **kwargs):
     
     rng = jax.random.PRNGKey(seed)
-    rng, actor_key, value_key, encoder_key = jax.random.split(rng, 4)
-    
+    expert_icvf = create_learner(seed, expert_ds_obs)
+    agent_icvf = create_learner(seed, offline_ds_obs)
 
+    return JointICVF(expert_icvf=expert_icvf, agent_icvf=agent_icvf)
 
 def get_default_config():
     config = ml_collections.ConfigDict({
