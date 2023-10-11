@@ -16,8 +16,9 @@ def expectile_loss(adv, diff, expectile):
     weight = jnp.where(adv >= 0, expectile, (1 - expectile))
     return weight * diff ** 2
 
-def icvf_loss(value_fn, agent, batch, expectile: float = 0.8, discount: float = 0.95):
-    (next_v1_gz, next_v2_gz) = agent.evaluate_ensemble(agent.target_value.target_model, batch['next_observations'], batch['icvf_goals'], batch['icvf_desired_goals'])
+def icvf_loss(value_fn, agent, batch, expectile: float = 0.85, discount: float = 0.99):
+    (next_v1_gz, next_v2_gz) = agent.evaluate_ensemble(agent.target_value.target_model, batch['next_observations'], batch['icvf_goals'], batch['icvf_desired_goals']) # s, g, z (z = s+)
+
     q1_gz = batch['icvf_rewards'] + discount * batch['icvf_masks'] * next_v1_gz
     q2_gz = batch['icvf_rewards'] + discount * batch['icvf_masks'] * next_v2_gz
     q1_gz, q2_gz = jax.lax.stop_gradient(q1_gz), jax.lax.stop_gradient(q2_gz)
@@ -49,7 +50,7 @@ def icvf_loss(value_fn, agent, batch, expectile: float = 0.8, discount: float = 
         'adv max': advantage.max(),
         'adv min': advantage.min(),
         'accept prob': (advantage >= 0).mean(),
-        'reward mean': batch['rewards'].mean(),
+        'reward mean': batch['icvf_rewards'].mean(),
         'q_gz max': q1_gz.max()
     }
 

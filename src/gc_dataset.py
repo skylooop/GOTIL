@@ -102,32 +102,27 @@ class GCSDataset(GCDataset):
             indx = np.random.randint(self.dataset.size-1, size=batch_size)
 
         batch = self.dataset.sample(batch_size, indx)
-        
         goal_indx = self.sample_goals(indx)
-        desired_goal_indx = self.sample_goals(indx)
         
         if mode == "icvf":
             icvf_goal_indx = self.sample_goals(indx)
-            icvf_desired_goal_indx = self.sample_goals(indx)
-            
-            icvf_goal_indx = np.clip(icvf_goal_indx, 0, self.dataset.size-1)
-            icvf_desired_goal_indx = np.clip(icvf_desired_goal_indx, 0, self.dataset.size-1)
+            icvf_desired_goal_indx = self.sample_goals(indx) # s+
+
             icvf_goal_indx = np.where(np.random.rand(batch_size) < 0.5, icvf_desired_goal_indx, icvf_goal_indx)
+
+            icvf_success = (indx == icvf_goal_indx) # goal
+            icvf_desired_success = (indx == icvf_desired_goal_indx) # final state, s+
             
-            icvf_success = (indx == icvf_goal_indx) # intent
-            icvf_desired_success = (indx == icvf_desired_success) # final state, s+
-            
-            batch['icvf_rewards'] = success.astype(float) * self.reward_scale + self.reward_shift
+            batch['icvf_rewards'] = icvf_success.astype(float) * self.reward_scale + self.reward_shift # reached goal (not s+!)
             batch['icvf_desired_rewards'] = icvf_desired_success.astype(float) * self.reward_scale + self.reward_shift
             
             batch['icvf_goals'] = jax.tree_map(lambda arr: arr[icvf_goal_indx], self.dataset['observations'])
-            batch['icvf_desired_goals'] = jax.tree_map(lambda arr: arr[desired_goal_indx], self.dataset['observations'])
+            batch['icvf_desired_goals'] = jax.tree_map(lambda arr: arr[icvf_desired_goal_indx], self.dataset['observations'])
             
-            batch['icvf_masks'] = (1.0 - icvf_success.astype(float))
-            batch['icvf_desired_masks'] = (1.0 - desired_success.astype(float))
+            batch['icvf_masks'] = (1.0 - icvf_success.astype(float)) # reached goal
+            batch['icvf_desired_masks'] = (1.0 - icvf_desired_success.astype(float)) # reached s+
 
         success = (indx == goal_indx)
-        desired_success = (indx == desired_goal_indx)
         
         batch['rewards'] = success.astype(float) * self.reward_scale + self.reward_shift
         
