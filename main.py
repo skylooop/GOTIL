@@ -422,7 +422,7 @@ def main(_):
             eval_metrics['V function'] = wandb.Image(image_v)
             wandb.log(eval_metrics, step=i)
             
-        if (i == 1 or i % FLAGS.eval_interval == 0) and FLAGS.algo_name == "hiql":
+        if i % FLAGS.eval_interval == 0 and FLAGS.algo_name == "hiql":
             policy_fn = partial(supply_rng(agent.sample_actions), discrete=discrete)
             high_policy_fn = partial(supply_rng(agent.sample_high_actions))
             policy_rep_fn = agent.get_policy_rep
