@@ -20,7 +20,7 @@ from src.gc_dataset import GCSDataset
 from jaxrl_m.wandb import setup_wandb, default_wandb_config
 import wandb
 from jaxrl_m.evaluation import supply_rng, evaluate_with_trajectories, EpisodeMonitor
-
+from xmagical_ext.xmagical_utils import evaluate_with_trajectories_xmagical
 from ml_collections import config_flags
 import pickle
 import equinox as eqx
@@ -456,6 +456,17 @@ def main(_):
                         goal_info=goal_info, config=FLAGS.config,
                     )
                     eval_metrics.update({f'evaluation/level{goal_info["eval_level_name"]}_{k}': v for k, v in eval_info.items()})
+            
+            if 'gripper' in FLAGS.env_name:
+                indx = jax.numpy.argmax(pretrain_dataset.dataset['masks'] == 0)
+                goal = jax.tree_map(lambda arr: arr[indx], pretrain_dataset.dataset['observations'])
+                eval_info, video, goal = evaluate_with_trajectories_xmagical(
+                    policy_fn, high_policy_fn, policy_rep_fn, env, num_episodes=FLAGS.eval_episodes,
+                    base_observation=base_observation, goal=goal, num_video_episodes=FLAGS.num_video_episodes,
+                    use_waypoints=FLAGS.use_waypoints,
+                    eval_temperature=0,
+                    goal_info=goal_info, config=FLAGS.config,)
+                
             else:
                 eval_info, trajs, renders = evaluate_with_trajectories(
                     policy_fn, high_policy_fn, policy_rep_fn, env, env_name=FLAGS.env_name, num_episodes=FLAGS.eval_episodes,
