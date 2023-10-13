@@ -14,6 +14,7 @@ import tqdm
 
 from src.agents import hiql, cilot, icvf
 from src import d4rl_utils, d4rl_ant, ant_diagnostics, viz_utils
+from d4rl_ext.xmagical import xmagical_ext
 from d4rl_ext.generate_antmaze_random import get_dataset
 from src.gc_dataset import GCSDataset
 from jaxrl_m.wandb import setup_wandb, default_wandb_config
@@ -27,7 +28,7 @@ import equinox as eqx
 from src.utils import record_video
 
 FLAGS = flags.FLAGS 
-flags.DEFINE_string('env_name', 'antmaze-large-diverse-v2', '') #antmaze-large-diverse-v2
+flags.DEFINE_string('env_name', 'antmaze-umaze-v2', '') #antmaze-large-diverse-v2
 flags.DEFINE_string('save_dir', f'experiment_output/', '')
 flags.DEFINE_string('run_group', 'baseline', '')
 flags.DEFINE_integer('seed', 0, '')
@@ -63,6 +64,11 @@ flags.DEFINE_integer('visual', 0, '')
 flags.DEFINE_string('encoder', 'impala', '')
 
 flags.DEFINE_string('algo_name', "hiql", '')
+
+
+# FOR X-MAGICAL
+flags.DEFINE_enum('modality', 'gripper', ['gripper', 'shortstick', 'mediumstick', 'longstick'], 'Modality name')
+flags.DEFINE_enum('video_type', 'same', ['same', 'cross', 'all'], 'Type of video data to train on (only modality, all but modality, or all)')
 
 wandb_config = default_wandb_config()
 wandb_config.update({
@@ -222,7 +228,16 @@ def main(_):
             env.viewer.cam.lookat[1] = 12
             env.viewer.cam.distance = 50
             env.viewer.cam.elevation = -90
-    
+
+    elif "gripper" in FLAGS.env_name:
+        env = xmagical_ext.make_env(FLAGS.modality, visual="State")
+        if FLAGS.video_type == 'same':
+            dataset = xmagical_ext.get_dataset(FLAGS.modality)
+        elif FLAGS.video_type == 'cross':
+            dataset = xmagical_ext.crossembodiment_dataset(FLAGS.modality, FLAGS.dataset)
+        elif FLAGS.video_type == 'all':
+            dataset = xmagical_ext.crossembodiment_dataset(None, FLAGS.dataset)
+
     elif 'kitchen' in FLAGS.env_name:
         env = d4rl_utils.make_env(FLAGS.env_name)
         dataset = d4rl_utils.get_dataset(env, FLAGS.env_name, filter_terminals=True)
@@ -323,7 +338,8 @@ def main(_):
     elif 'procgen-1000' in FLAGS.env_name:
         example_trajectory = pretrain_dataset.sample(50, indx=np.arange(5000, 5050))
     else:
-        raise NotImplementedError
+        pass
+        #TODO
 
     if FLAGS.algo_name == "hiql":
         agent = hiql.create_learner(FLAGS.seed,
@@ -366,6 +382,7 @@ def main(_):
             train_metrics = {f'training/{k}': v for k, v in update_info.items()}
             train_metrics.update({f'training_stats/{k}': v for k, v in debug_statistics.items()})
             wandb.log(train_metrics, step=i)
+
         elif FLAGS.algo_name == "cilot" and i % FLAGS.log_interval == 0:
             if agent.cur_processor == "expert":
                 name = "expert"
