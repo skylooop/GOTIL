@@ -13,17 +13,18 @@
             "justMyCode": false
         },
         {
-            "name": "HIQL",
+            "name": "GOTIL",
             "type": "python",
             "request": "launch",
-            "program": "/home/simmax21/Desktop/GOTIL/main.py",
+            "program": "main.py",
             "console": "integratedTerminal",
-            "cwd": "/home/simmax21/Desktop/GOTIL",
+            "cwd": "${workspaceFolder}",
             "env": {
-                "PYTHONPATH": "/home/simmax21/Desktop/GOTIL"
+                "PYTHONPATH": "cwd",
+                "CUDA_VISIBLE_DEVICES": "1"
             },
             "args": [
-                "--flagfile=/home/simmax21/Desktop/GOTIL/configs/antmaze-large_icvf.cfg"
+                "--flagfile=configs/xmagical_hiql.cfg"
             ],
             "justMyCode": true
         }

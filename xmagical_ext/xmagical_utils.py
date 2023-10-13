@@ -26,7 +26,7 @@ def get_dataset(modality, dir_name='d4rl_ext/xmagical/xmagical_replay', keys=Non
     modality = modality.lower()
     assert modality in ['gripper', 'shortstick', 'mediumstick', 'longstick']
     fname = f'{dir_name}/{modality}_train.npz'
-    buffer = np.load(fname)
+    buffer = np.load(fname, mmap_mode="r")
     if keys is None: keys = buffer.keys()
     return Dataset({k: buffer[k] for k in keys})
 
