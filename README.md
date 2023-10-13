@@ -5,7 +5,9 @@ python main.py --flagfile=configs.antmaze-large_icvf.cfg
 ## Installation
 
 ```
-
+# Install fixed X-Magical lib 
+# Download Datasets:
+``
 # Install CALVIN (optional)
 # Download `calvin.gz` (dataset) following the instructions at https://github.com/clvrai/skimo and place it in the `data` directory.
 cd calvin

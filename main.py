@@ -14,7 +14,7 @@ import tqdm
 
 from src.agents import hiql, cilot, icvf
 from src import d4rl_utils, d4rl_ant, ant_diagnostics, viz_utils
-from d4rl_ext.xmagical import xmagical_ext
+from xmagical_ext import xmagical_utils
 from d4rl_ext.generate_antmaze_random import get_dataset
 from src.gc_dataset import GCSDataset
 from jaxrl_m.wandb import setup_wandb, default_wandb_config
@@ -69,6 +69,7 @@ flags.DEFINE_string('algo_name', "hiql", '')
 # FOR X-MAGICAL
 flags.DEFINE_enum('modality', 'gripper', ['gripper', 'shortstick', 'mediumstick', 'longstick'], 'Modality name')
 flags.DEFINE_enum('video_type', 'same', ['same', 'cross', 'all'], 'Type of video data to train on (only modality, all but modality, or all)')
+flags.DEFINE_string('xmagical_expert_path', "xmagical_ext/xmagical_replay", "Path to dataset with expert demonstrations.")
 
 wandb_config = default_wandb_config()
 wandb_config.update({
@@ -230,13 +231,13 @@ def main(_):
             env.viewer.cam.elevation = -90
 
     elif "gripper" in FLAGS.env_name:
-        env = xmagical_ext.make_env(FLAGS.modality, visual="State")
+        env = xmagical_utils.make_env(FLAGS.modality, visual="State")
         if FLAGS.video_type == 'same':
-            dataset = xmagical_ext.get_dataset(FLAGS.modality)
+            dataset = xmagical_utils.get_dataset(FLAGS.modality, dir_name=FLAGS.xmagical_expert_path)
         elif FLAGS.video_type == 'cross':
-            dataset = xmagical_ext.crossembodiment_dataset(FLAGS.modality, FLAGS.dataset)
+            dataset = xmagical_utils.crossembodiment_dataset(FLAGS.modality, FLAGS.xmagical_expert_path)
         elif FLAGS.video_type == 'all':
-            dataset = xmagical_ext.crossembodiment_dataset(None, FLAGS.dataset)
+            dataset = xmagical_utils.crossembodiment_dataset(None, FLAGS.xmagical_expert_path)
 
     elif 'kitchen' in FLAGS.env_name:
         env = d4rl_utils.make_env(FLAGS.env_name)
