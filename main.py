@@ -83,8 +83,26 @@ config_flags.DEFINE_config_dict('wandb', wandb_config, lock_config=False)
 gcdataset_config = GCSDataset.get_default_config()
 config_flags.DEFINE_config_dict('gcdataset', gcdataset_config, lock_config=False)
 
+@jax.jit
+def get_debug_statistics_hiql(agent, batch):
+    def get_info(s, g):
+        return agent.network(s, g, info=True, method='value')
+
+    s = batch['observations']
+    g = batch['goals']
+
+    info = get_info(s, g)
+
+    stats = {}
+
+    stats.update({
+        'v': info['v'].mean(),
+    })
+
+    return stats
+
 @eqx.filter_jit
-def get_debug_statistics(agent, batch):
+def get_debug_statistics_icvf(agent, batch):
     def get_info(s, s_plus, intent):
         return agent.evaluate_ensemble(agent.value.model, s, s_plus, intent)
 
@@ -379,7 +397,7 @@ def main(_):
             agent, update_info = supply_rng(agent.pretrain_update)(pretrain_batch)
 
         if i % FLAGS.log_interval == 0 and FLAGS.algo_name != "cilot":
-            debug_statistics = get_debug_statistics(agent, pretrain_batch)
+            debug_statistics = get_debug_statistics_hiql(agent, pretrain_batch)
             train_metrics = {f'training/{k}': v for k, v in update_info.items()}
             train_metrics.update({f'training_stats/{k}': v for k, v in debug_statistics.items()})
             wandb.log(train_metrics, step=i)
@@ -391,7 +409,7 @@ def main(_):
             else:
                 name = "agent"
                 agent = agent.agent_icvf
-            debug_statistics = get_debug_statistics(agent, pretrain_batch)
+            debug_statistics = get_debug_statistics_icvf(agent, pretrain_batch)
             train_metrics = {f'training/{name}/{k}': v for k, v in update_info.items()}
             train_metrics.update({f'training_stats/{name}/{k}': v for k, v in debug_statistics.items()})
             wandb.log(train_metrics, step=i)

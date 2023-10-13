@@ -8,7 +8,7 @@ from jaxrl_m.evaluation import EpisodeMonitor
 from jaxrl_m.dataset import Dataset
 import jax
 
-def make_env(modality, visual='Pixels', randomize=False):
+def make_env(modality, visual='State', randomize=False):
     modality = modality.capitalize()
     assert modality in ['Gripper', 'Shortstick', 'Mediumstick', 'Longstick']
     if randomize:
@@ -26,8 +26,10 @@ def get_dataset(modality, dir_name='d4rl_ext/xmagical/xmagical_replay', keys=Non
     modality = modality.lower()
     assert modality in ['gripper', 'shortstick', 'mediumstick', 'longstick']
     fname = f'{dir_name}/{modality}_train.npz'
-    buffer = np.load(fname, mmap_mode="r")
+    buffer = dict(np.load(fname, mmap_mode="r"))
     if keys is None: keys = buffer.keys()
+    buffer['observations'] = buffer['states']
+    buffer['next_observations'] = buffer['next_states']
     return Dataset({k: buffer[k] for k in keys})
 
 def get_all_datasets(dir_name='d4rl_ext/xmagical/xmagical_replay'):
