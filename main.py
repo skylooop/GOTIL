@@ -504,17 +504,6 @@ def main(_):
                 eval_metrics['v'] = wandb.Image(image_v)
 
             wandb.log(eval_metrics, step=i)
-        # if i % FLAGS.save_interval == 0:
-        #     save_dict = dict(
-        #         agent=flax.serialization.to_state_dict(agent),
-        #         config=FLAGS.config.to_dict()
-        #     )
-
-        #     fname = os.path.join(FLAGS.save_dir, f'params_{i}.pkl')
-        #     print(f'Saving to {fname}')
-        #     with open(fname, "wb") as f:
-        #         pickle.dump(save_dict, f)
-
 
 if __name__ == '__main__':
     app.run(main)
