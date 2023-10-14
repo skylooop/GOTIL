@@ -21,10 +21,9 @@
             "cwd": "${workspaceFolder}",
             "env": {
                 "PYTHONPATH": "cwd",
-                "CUDA_VISIBLE_DEVICES": "1"
             },
             "args": [
-                "--flagfile=configs/xmagical_hiql.cfg"
+                "--flagfile=configs/antmaze-large_icvf.cfg"
             ],
             "justMyCode": true
         }

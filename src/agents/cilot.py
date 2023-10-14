@@ -14,11 +14,20 @@ from jaxrl_m.evaluation import supply_rng
 
 from src.agents.icvf import create_learner
 
+class Critic(eqx.Module):
+    def __init__(self, obs):
+        self.net = nn.MLP(in_size=obs * 2, out_size=1, width_size=256, depth=2) # (256, 256)
+        
+    def __call__(self, observations, intents):
+        v1, v2 = self.net(jnp.concatenate([observations, intents], axis=-1)).squeeze(-1)
+        return (v1 + v2) / 2.
+
 class JointICVF(eqx.Module):
     expert_icvf: eqx.Module
     agent_icvf: eqx.Module
+    agent_critic: eqx.Module
     cur_processor: str = None
-
+    
     def pretrain_expert(self, batch):
         new_expert_agent, update_info = supply_rng(self.expert_icvf.pretrain_update)(batch)
         return dataclasses.replace(self, expert_icvf=new_expert_agent, cur_processor="expert"), update_info
@@ -26,6 +35,9 @@ class JointICVF(eqx.Module):
     def pretrain_agent(self, batch):
         new_agent, update_info = supply_rng(self.agent_icvf.pretrain_update)(batch)
         return dataclasses.replace(self, agent_icvf=new_agent, cur_processor="agent"), update_info
+    
+    def expert_codebook(self):
+        pass
 
 def create_joint_learner(seed: int,
                    offline_ds_obs,
@@ -42,8 +54,9 @@ def create_joint_learner(seed: int,
     rng = jax.random.PRNGKey(seed)
     expert_icvf = create_learner(seed, expert_ds_obs)
     agent_icvf = create_learner(seed, offline_ds_obs)
-
-    return JointICVF(expert_icvf=expert_icvf, agent_icvf=agent_icvf)
+    agent_critic = Critic(offline_ds_obs.shape[-1])
+    
+    return JointICVF(expert_icvf=expert_icvf, agent_icvf=agent_icvf, agent_critic=agent_critic)
 
 def get_default_config():
     config = ml_collections.ConfigDict({

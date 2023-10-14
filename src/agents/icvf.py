@@ -62,7 +62,7 @@ class ICVF_Multilinear(eqx.Module):
     psi_ln: eqx.Module
     phi_ln: eqx.Module
     
-    def __init__(self, key, in_size, hidden_dims, use_layer_norm: bool = False):
+    def __init__(self, key, in_size, hidden_dims, use_layer_norm: bool = True):
         phi_key, psi_key, t_key = jax.random.split(key, 3)
         
         self.phi_net = nn.MLP(in_size=in_size, out_size=hidden_dims[-1],
@@ -84,9 +84,9 @@ class ICVF_Multilinear(eqx.Module):
         phi = self.phi_ln(self.phi_net(s))
         psi = self.psi_ln(self.psi_net(s_plus))
         z = self.psi_net(intent) # z = psi(s_z), s_z here like in paper subset of state space (s_z - some state)
-        T_z = self.T_net(z)
+        T_z = self.T_net(z[:, None]) # 256x256
         
-        return phi @ jnp.multiply(T_z, psi.T)
+        return phi @ (T_z @ psi)
 
 class ICVF_Agent(eqx.Module):
     value: eqx.Module

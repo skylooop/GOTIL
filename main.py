@@ -139,28 +139,28 @@ def get_v(agent, goal, observations):
     goal = jnp.tile(goal, (observations.shape[0], 1))
     return get_gcvalue(agent, observations, goal)
 
-
-# Some bug with positions
-@eqx.filter_jit
+#@eqx.filter_jit
 def get_traj_icvf(agent, trajectory):
     def get_v(s, intent):
-        return agent.evaluate_ensemble(agent.value.model, jax.tree_map(lambda x: x[None], s), jax.tree_map(lambda x: x[None], intent),
-                                         jax.tree_map(lambda x: x[None], intent)).mean()
+        v1,v2 = agent.evaluate_ensemble(agent.value.model, jax.tree_map(lambda x: x[None], s), jax.tree_map(lambda x: x[None], intent),
+                                         jax.tree_map(lambda x: x[None], intent))
+        return (v1 + v2) / 2.
+    
     observations = trajectory['observations']
     all_values = jax.vmap(jax.vmap(get_v, in_axes=(None, 0)), in_axes=(0, None))(observations, observations)
     return {
-        'dist_to_beginning': all_values[:, 0],
-        'dist_to_end': all_values[:, -1],
-        'dist_to_middle': all_values[:, all_values.shape[1] // 2],
+        'dist_from_beginning': all_values[:, 0],
+        'dist_from_end': all_values[:, -1],
+        'dist_from_middle': all_values[:, all_values.shape[1] // 2],
     }
 
-@jax.jit
+#@jax.jit
 def get_traj_v(agent, trajectory):
     def get_v(s, g):
         v1, v2 = agent.network(jax.tree_map(lambda x: x[None], s), jax.tree_map(lambda x: x[None], g), method='value')
         return (v1 + v2) / 2
     observations = trajectory['observations']
-    all_values = jax.vmap(jax.vmap(get_v, in_axes=(None, 0)), in_axes=(0, None))(observations, observations)
+    all_values = jax.vmap(jax.vmap(get_v, in_axes=(None, 0)), in_axes=(0, None))(observations, observations) # 50x50x1
     return {
         'dist_to_beginning': all_values[:, 0],
         'dist_to_end': all_values[:, -1],
@@ -219,13 +219,16 @@ def main(_):
         
         # offline ds - random noisy data
         # think about mismatch, when there can be different actions
-        offline_dataset = get_dataset("d4rl_ext/antmaze_demos/antmaze-umaze-v2-randomstart-noiserandomaction.hdf5")
-        offline_dataset = d4rl_utils.get_dataset(env, FLAGS.env_name, dataset=offline_dataset)
+        
+        #offline_dataset = get_dataset("d4rl_ext/antmaze_demos/antmaze-umaze-v2-randomstart-noiserandomaction.hdf5")
+        #offline_dataset = d4rl_utils.get_dataset(env, FLAGS.env_name, dataset=offline_dataset)
 
         dataset = d4rl_utils.get_dataset(env, FLAGS.env_name) # expert trajectories from D4RL
         dataset = dataset.copy({'rewards': dataset['rewards'] - 1.0})
+        os.environ['CUDA_VISIBLE_DEVICES']="4"
         env.render(mode='rgb_array', width=200, height=200)
-
+        os.environ['CUDA_VISIBLE_DEVICES']="0,1,2,3,4"
+        
         if 'large' in FLAGS.env_name:
             env.viewer.cam.lookat[0] = 18
             env.viewer.cam.lookat[1] = 12
@@ -373,6 +376,7 @@ def main(_):
     elif FLAGS.algo_name == "icvf":
         agent = icvf.create_learner(FLAGS.seed,
                                     example_batch['observations'])
+        
     elif FLAGS.algo_name == "cilot":
         pretrain_offline_dataset = GCSDataset(offline_dataset, **FLAGS.gcdataset.to_dict())
         joint_icvf = cilot.create_joint_learner(FLAGS.seed,
@@ -381,6 +385,7 @@ def main(_):
                                     encoder=None,
                                     intention_book="uniform", 
                                     **FLAGS.config)
+        
     for i in tqdm.tqdm(range(1, total_steps + 1),
                        smoothing=0.1,
                        dynamic_ncols=True):
@@ -396,13 +401,13 @@ def main(_):
         else:
             agent, update_info = supply_rng(agent.pretrain_update)(pretrain_batch)
 
-        if i % FLAGS.log_interval == 0 and FLAGS.algo_name != "cilot":
+        if i % FLAGS.log_interval == 0 and FLAGS.algo_name == "hiql":
             debug_statistics = get_debug_statistics_hiql(agent, pretrain_batch)
             train_metrics = {f'training/{k}': v for k, v in update_info.items()}
             train_metrics.update({f'training_stats/{k}': v for k, v in debug_statistics.items()})
             wandb.log(train_metrics, step=i)
 
-        elif FLAGS.algo_name == "cilot" and i % FLAGS.log_interval == 0:
+        elif i % FLAGS.log_interval == 0 and FLAGS.algo_name == "cilot":
             if agent.cur_processor == "expert":
                 name = "expert"
                 agent = agent.expert_icvf
