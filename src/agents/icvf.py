@@ -16,12 +16,12 @@ def expectile_loss(adv, diff, expectile):
     weight = jnp.where(adv >= 0, expectile, (1 - expectile))
     return weight * diff ** 2
 
-def icvf_loss(value_fn, target_model_fn, agent, batch, expectile: float = 0.9, discount: float = 0.95):
+def icvf_loss(value_fn, target_model_fn, agent, batch, expectile: float = 0.9, discount: float = 0.999):
     (next_v1_gz, next_v2_gz) = agent.evaluate_ensemble(target_model_fn, batch['next_observations'], batch['icvf_goals'], batch['icvf_desired_goals']) # s, g, z (z = s+)
 
     q1_gz = batch['icvf_rewards'] + discount * batch['icvf_masks'] * next_v1_gz
     q2_gz = batch['icvf_rewards'] + discount * batch['icvf_masks'] * next_v2_gz
-    #q1_gz, q2_gz = jax.lax.stop_gradient(q1_gz), jax.lax.stop_gradient(q2_gz)
+    q1_gz, q2_gz = jax.lax.stop_gradient(q1_gz), jax.lax.stop_gradient(q2_gz)
 
     (v1_gz, v2_gz) = agent.evaluate_ensemble(value_fn, batch['observations'], batch['icvf_goals'], batch['icvf_desired_goals'])
 
@@ -70,7 +70,7 @@ class ICVF_Multilinear(eqx.Module):
         phi_key, psi_key, t_key, matrix_a_key, matrix_b_key = jax.random.split(key, 5)
         
         self.phi_net = nn.MLP(in_size=in_size, out_size=hidden_dims[-1],
-                              depth=2, width_size=hidden_dims[0], key=phi_key, activation=jax.nn.gelu)
+                              depth=3, width_size=hidden_dims[0], key=phi_key, activation=jax.nn.gelu)
         if use_layer_norm:
             self.phi_ln = nn.LayerNorm(hidden_dims[-1])
             self.psi_ln = nn.LayerNorm(hidden_dims[-1])
@@ -79,10 +79,10 @@ class ICVF_Multilinear(eqx.Module):
             self.psi_ln = nn.Identity()
 
         self.psi_net = nn.MLP(in_size=in_size, out_size=hidden_dims[-1],
-                              depth=2, width_size=hidden_dims[0], key=psi_key, activation=jax.nn.gelu)
+                              depth=3, width_size=hidden_dims[0], key=psi_key, activation=jax.nn.gelu)
         
         self.T_net = nn.MLP(in_size=hidden_dims[-1], out_size=hidden_dims[-1],
-                              depth=2, width_size=hidden_dims[0], key=t_key, activation=jax.nn.gelu)
+                              depth=3, width_size=hidden_dims[0], key=t_key, activation=jax.nn.gelu)
         
         self.matrix_a = nn.Linear(in_features=hidden_dims[-1], out_features=hidden_dims[-1], key=matrix_a_key)
         self.matrix_b = nn.Linear(in_features=hidden_dims[-1], out_features=hidden_dims[-1], key=matrix_b_key)
@@ -118,9 +118,9 @@ class ICVF_Agent(eqx.Module):
 def create_learner(
     seed,
     observations,
-    hidden_dims: Sequence[int] = (256, 256),
+    hidden_dims: Sequence[int] = (256, 256, 256),
     optim_kwargs: dict = {
-                    'learning_rate': 2e-3, # 1e-3 for FC, for vision 5e-4
+                    'learning_rate': 3e-3, # 1e-3 for FC, for vision 5e-4
                     'eps': 0.0003125
                  },
     num_ensemble_vals: int = 2,

@@ -26,6 +26,7 @@ class JointICVF(eqx.Module):
     expert_icvf: eqx.Module
     agent_icvf: eqx.Module
     agent_critic: eqx.Module
+    
     cur_processor: str = None
     
     def pretrain_expert(self, batch):
@@ -46,14 +47,13 @@ def create_joint_learner(seed: int,
                    intention_book,
                    actor_hidden_dims: Sequence[int] = (256, 256),
                    value_hidden_dims: Sequence[int] = (256, 256),
-                   discount: float = 0.99,
-                   tau: float = 0.005,
-                   pretrain_expectile: float = 0.85,
                    **kwargs):
     
     rng = jax.random.PRNGKey(seed)
-    expert_icvf = create_learner(seed, expert_ds_obs)
-    agent_icvf = create_learner(seed, offline_ds_obs)
+    expert_icvf_key, agent_icvf_key = jax.random.split(rng, 2)
+    
+    expert_icvf = create_learner(expert_icvf_key, expert_ds_obs)
+    agent_icvf = create_learner(agent_icvf_key, offline_ds_obs)
     agent_critic = Critic(offline_ds_obs.shape[-1])
     
     return JointICVF(expert_icvf=expert_icvf, agent_icvf=agent_icvf, agent_critic=agent_critic)

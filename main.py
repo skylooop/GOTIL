@@ -15,7 +15,7 @@ import tqdm
 from src.agents import hiql, cilot, icvf
 from src import d4rl_utils, d4rl_ant, ant_diagnostics, viz_utils
 from xmagical_ext import xmagical_utils
-from d4rl_ext.generate_antmaze_random import get_dataset
+from generate_antmaze_random import get_dataset
 from src.gc_dataset import GCSDataset
 from jaxrl_m.wandb import setup_wandb, default_wandb_config
 import wandb
@@ -139,7 +139,7 @@ def get_v(agent, goal, observations):
     goal = jnp.tile(goal, (observations.shape[0], 1))
     return get_gcvalue(agent, observations, goal)
 
-#@eqx.filter_jit
+@eqx.filter_jit
 def get_traj_icvf(agent, trajectory):
     def get_v(s, intent):
         v1, v2 = agent.evaluate_ensemble(agent.value.model, s[None], intent[None], intent[None])
@@ -148,9 +148,9 @@ def get_traj_icvf(agent, trajectory):
     observations = trajectory['observations']
     all_values = jax.vmap(jax.vmap(get_v, in_axes=(None, 0)), in_axes=(0, None))(observations, observations)
     return {
-        'dist_from_beginning': all_values[:, 0],
-        'dist_from_end': all_values[:, -1],
-        'dist_from_middle': all_values[:, all_values.shape[1] // 2],
+        'dist_to_beginning': all_values[:, 0],
+        'dist_to_end': all_values[:, -1],
+        'dist_to_middle': all_values[:, all_values.shape[1] // 2],
     }
 
 @jax.jit
@@ -201,8 +201,8 @@ def main(_):
     FLAGS.wandb['group'] = FLAGS.wandb['exp_prefix'] = FLAGS.run_group
     setup_wandb(params_dict, **FLAGS.wandb)
 
-    FLAGS.save_dir = os.path.join(FLAGS.save_dir, wandb.run.project, wandb.config.exp_prefix, wandb.config.experiment_id)
-    os.makedirs(FLAGS.save_dir, exist_ok=True)
+    # FLAGS.save_dir = os.path.join(FLAGS.save_dir, wandb.run.project, wandb.config.exp_prefix, wandb.config.experiment_id)
+    # os.makedirs(FLAGS.save_dir, exist_ok=True)
 
     goal_info = None
     discrete = False
@@ -216,12 +216,11 @@ def main(_):
         else:
             env = d4rl_utils.make_env(env_name)
         
-        # offline ds - random noisy data
-        # think about mismatch, when there can be different actions
+        # offline ds - random noisy data + some successful trajs
+        offline_dataset = get_dataset("d4rl_ext/antmaze_demos/antmaze-umaze-v2-randomstart-noiserandomaction.hdf5")
+        offline_dataset = d4rl_utils.get_dataset(env, FLAGS.env_name, dataset=offline_dataset)
+        # TODO: Add to ds above some successful trajs
         
-        #offline_dataset = get_dataset("d4rl_ext/antmaze_demos/antmaze-umaze-v2-randomstart-noiserandomaction.hdf5")
-        #offline_dataset = d4rl_utils.get_dataset(env, FLAGS.env_name, dataset=offline_dataset)
-
         dataset = d4rl_utils.get_dataset(env, FLAGS.env_name) # expert trajectories from D4RL
         dataset = dataset.copy({'rewards': dataset['rewards'] - 1.0})
         os.environ['CUDA_VISIBLE_DEVICES']="4"
@@ -374,16 +373,17 @@ def main(_):
                                     **FLAGS.config)
     elif FLAGS.algo_name == "icvf":
         agent = icvf.create_learner(FLAGS.seed,
-                                    example_batch['observations'])
-        
+                                    example_batch['observations'],
+                                    num_ensemble_vals = 2,
+                                    use_layer_norm=bool(FLAGS.use_layer_norm))
+         
     elif FLAGS.algo_name == "cilot":
         pretrain_offline_dataset = GCSDataset(offline_dataset, **FLAGS.gcdataset.to_dict())
         joint_icvf = cilot.create_joint_learner(FLAGS.seed,
                                     offline_ds_obs=offline_dataset['observations'],
-                                    expert_ds_obs=example_batch['observations'],
+                                    expert_ds_obs=example_batch['observations'], #from d4rl
                                     encoder=None,
-                                    intention_book="uniform", 
-                                    **FLAGS.config)
+                                    intention_book="uniform")
         
     for i in tqdm.tqdm(range(1, total_steps + 1),
                        smoothing=0.1,

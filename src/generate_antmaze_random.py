@@ -71,8 +71,8 @@ def save_video(save_dir, file_name, frames, episode_id=0):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--noisy', action='store_true', help='Noisy actions')
-    parser.add_argument('--maze', type=str, default='umaze', help='Maze type. umaze, medium, or large')
-    parser.add_argument('--num_samples', type=int, default=int(300_000), help='Num samples to collect')
+    parser.add_argument('--maze', type=str, default='large', help='Maze type. umaze, medium, or large')
+    parser.add_argument('--num_samples', type=int, default=int(1e6), help='Num samples to collect')
     parser.add_argument('--env', type=str, default='ant', help='Environment type')
     parser.add_argument('--policy_file', type=str, default='policy_file', help='file_name')
     parser.add_argument('--max_episode_steps', default=1000, type=int)
