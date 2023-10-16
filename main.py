@@ -142,8 +142,7 @@ def get_v(agent, goal, observations):
 #@eqx.filter_jit
 def get_traj_icvf(agent, trajectory):
     def get_v(s, intent):
-        v1,v2 = agent.evaluate_ensemble(agent.value.model, jax.tree_map(lambda x: x[None], s), jax.tree_map(lambda x: x[None], intent),
-                                         jax.tree_map(lambda x: x[None], intent))
+        v1, v2 = agent.evaluate_ensemble(agent.value.model, s[None], intent[None], intent[None])
         return (v1 + v2) / 2.
     
     observations = trajectory['observations']
@@ -154,10 +153,10 @@ def get_traj_icvf(agent, trajectory):
         'dist_from_middle': all_values[:, all_values.shape[1] // 2],
     }
 
-#@jax.jit
+@jax.jit
 def get_traj_v(agent, trajectory):
     def get_v(s, g):
-        v1, v2 = agent.network(jax.tree_map(lambda x: x[None], s), jax.tree_map(lambda x: x[None], g), method='value')
+        v1, v2 = agent.network(s[None], g[None], method='value')
         return (v1 + v2) / 2
     observations = trajectory['observations']
     all_values = jax.vmap(jax.vmap(get_v, in_axes=(None, 0)), in_axes=(0, None))(observations, observations) # 50x50x1
@@ -400,8 +399,8 @@ def main(_):
 
         else:
             agent, update_info = supply_rng(agent.pretrain_update)(pretrain_batch)
-
-        if i % FLAGS.log_interval == 0 and FLAGS.algo_name == "hiql":
+            
+        if i % FLAGS.log_interval == 0 and  FLAGS.algo_name == "hiql":
             debug_statistics = get_debug_statistics_hiql(agent, pretrain_batch)
             train_metrics = {f'training/{k}': v for k, v in update_info.items()}
             train_metrics.update({f'training_stats/{k}': v for k, v in debug_statistics.items()})
@@ -418,11 +417,8 @@ def main(_):
             train_metrics = {f'training/{name}/{k}': v for k, v in update_info.items()}
             train_metrics.update({f'training_stats/{name}/{k}': v for k, v in debug_statistics.items()})
             wandb.log(train_metrics, step=i)
-
-        if i % FLAGS.log_interval == 0 and FLAGS.algo_name == "icvf":
-            # intent_set_indx = np.random.default_rng(0).choice(dataset.size, FLAGS.config.n_intents, replace=False)
-            #intent_indx = np.array([184588, 62200, 162996, 110214, 4086, 191369, 92549, 12946, 192021])
             
+        if i % FLAGS.log_interval == 0 and FLAGS.algo_name == "icvf":
             eval_metrics = {}
             traj_metrics = get_traj_icvf(agent, example_trajectory)
             value_viz = viz_utils.make_visual_no_image(
