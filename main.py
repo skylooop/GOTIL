@@ -12,10 +12,10 @@ import gzip
 
 import tqdm
 
-from src.agents import hiql, cilot, icvf
+from src.agents import hiql, icvf
 from src import d4rl_utils, d4rl_ant, ant_diagnostics, viz_utils
 from xmagical_ext import xmagical_utils
-from generate_antmaze_random import get_dataset
+
 from src.gc_dataset import GCSDataset
 from jaxrl_m.wandb import setup_wandb, default_wandb_config
 import wandb
@@ -216,13 +216,15 @@ def main(_):
         else:
             env = d4rl_utils.make_env(env_name)
         
+        # RUN generate_antmaze_random.py
         # offline ds - random noisy data + some successful trajs
-        offline_dataset = get_dataset("d4rl_ext/antmaze_demos/antmaze-umaze-v2-randomstart-noiserandomaction.hdf5")
-        offline_dataset = d4rl_utils.get_dataset(env, FLAGS.env_name, dataset=offline_dataset)
+        # offline_dataset = get_dataset("d4rl_ext/antmaze_demos/antmaze-umaze-v2-randomstart-noiserandomaction.hdf5")
+        # offline_dataset = d4rl_utils.get_dataset(env, FLAGS.env_name, dataset=offline_dataset)
         # TODO: Add to ds above some successful trajs
         
         dataset = d4rl_utils.get_dataset(env, FLAGS.env_name) # expert trajectories from D4RL
         dataset = dataset.copy({'rewards': dataset['rewards'] - 1.0})
+        
         os.environ['CUDA_VISIBLE_DEVICES']="4"
         env.render(mode='rgb_array', width=200, height=200)
         os.environ['CUDA_VISIBLE_DEVICES']="0,1,2,3,4"
@@ -373,9 +375,9 @@ def main(_):
                                     **FLAGS.config)
     elif FLAGS.algo_name == "icvf":
         agent = icvf.create_learner(FLAGS.seed,
-                                    example_batch['observations'],
-                                    num_ensemble_vals = 2,
-                                    use_layer_norm=bool(FLAGS.use_layer_norm))
+                                    example_batch['observations'],)
+                                    # num_ensemble_vals = 2,
+                                    # use_layer_norm=bool(FLAGS.use_layer_norm))
          
     elif FLAGS.algo_name == "cilot":
         pretrain_offline_dataset = GCSDataset(offline_dataset, **FLAGS.gcdataset.to_dict())
@@ -400,7 +402,7 @@ def main(_):
         else:
             agent, update_info = supply_rng(agent.pretrain_update)(pretrain_batch)
             
-        if i % FLAGS.log_interval == 0 and  FLAGS.algo_name == "hiql":
+        if i % FLAGS.log_interval == 0 and FLAGS.algo_name == "hiql":
             debug_statistics = get_debug_statistics_hiql(agent, pretrain_batch)
             train_metrics = {f'training/{k}': v for k, v in update_info.items()}
             train_metrics.update({f'training_stats/{k}': v for k, v in debug_statistics.items()})
@@ -408,18 +410,27 @@ def main(_):
 
         elif i % FLAGS.log_interval == 0 and FLAGS.algo_name == "cilot":
             if agent.cur_processor == "expert":
+                # codebook - embedding (instead of z) 
+                # try first psi(intent) = z - vector for OT
                 name = "expert"
                 agent = agent.expert_icvf
             else:
+                # V(s, z)
+                # policy - outputs z and action
                 name = "agent"
                 agent = agent.agent_icvf
+                
             debug_statistics = get_debug_statistics_icvf(agent, pretrain_batch)
             train_metrics = {f'training/{name}/{k}': v for k, v in update_info.items()}
             train_metrics.update({f'training_stats/{name}/{k}': v for k, v in debug_statistics.items()})
             wandb.log(train_metrics, step=i)
             
         if i % FLAGS.log_interval == 0 and FLAGS.algo_name == "icvf":
+            train_metrics = {f'training/{k}': v for k, v in update_info.items()}
+            wandb.log(train_metrics, step=i)
+            
             eval_metrics = {}
+            
             traj_metrics = get_traj_icvf(agent, example_trajectory)
             value_viz = viz_utils.make_visual_no_image(
                 traj_metrics,
@@ -434,8 +445,7 @@ def main(_):
             image_icvf = d4rl_ant.gcicvf_image(
                     viz_env,
                     viz_dataset,
-                    partial(get_gcvalue_icvf, agent),
-                    #intent_indx
+                    partial(get_gcvalue_icvf, agent)
                 )
             eval_metrics['ICVF function'] = wandb.Image(image_icvf)
             eval_metrics['V function'] = wandb.Image(image_v)

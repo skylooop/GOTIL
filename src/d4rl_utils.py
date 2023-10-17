@@ -31,6 +31,14 @@ def make_env(env_name: str):
     env = EpisodeMonitor(env)
     return env
 
+def compute_mean_std(states: np.ndarray, eps: float):
+    mean = states.mean(0)
+    std = states.std(0) + eps
+    return mean, std
+
+def normalize_states(states, mean, std):
+    return (states - mean) / std
+
 def get_dataset(env: gym.Env,
                 env_name: str,
                 clip_to_eps: bool = True,
@@ -38,6 +46,7 @@ def get_dataset(env: gym.Env,
                 dataset=None,
                 filter_terminals=False,
                 obs_dtype=np.float32,
+                normalize_states=False
                 ):
         if dataset is None:
             dataset = d4rl.qlearning_dataset(env)
@@ -76,6 +85,13 @@ def get_dataset(env: gym.Env,
         observations = dataset['observations'].astype(obs_dtype)
         next_observations = dataset['next_observations'].astype(obs_dtype)
 
+        
+        if normalize_states:
+            state_mean, state_std = compute_mean_std(dataset["observations"], eps=1e-3)
+            print(f"Dataset Mean: {state_mean}, STD: {state_std}")
+            observations = normalize_states(dataset["observations"], state_mean, state_std)
+            next_observations = normalize_states(dataset["next_observations"], state_mean, state_std)
+        
         return Dataset.create(
             observations=observations,
             actions=dataset['actions'].astype(np.float32),
@@ -94,11 +110,3 @@ def get_normalization(dataset):
                 returns.append(ret)
                 ret = 0
         return (max(returns) - min(returns)) / 1000
-
-def normalize_dataset(env_name, dataset):
-    if 'antmaze' in env_name:
-         return  dataset.copy({'rewards': dataset['rewards']- 1.0})
-    else:
-        normalizing_factor = get_normalization(dataset)
-        dataset = dataset.copy({'rewards': dataset['rewards'] / normalizing_factor})
-        return dataset

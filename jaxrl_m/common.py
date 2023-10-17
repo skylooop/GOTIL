@@ -138,7 +138,7 @@ class TrainState(flax.struct.PyTreeNode):
             replaced as specified by `kwargs`.
         """
 
-        updates, new_opt_state = self.tx.update(grads, self.opt_state)
+        updates, new_opt_state = self.tx.update(grads, self.opt_state, self.params)
         new_params = optax.apply_updates(self.params, updates)
 
         return self.replace(

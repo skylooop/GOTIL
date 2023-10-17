@@ -105,10 +105,9 @@ class GCSDataset(GCDataset):
         goal_indx = self.sample_goals(indx)
         
         if mode == "icvf":
-            icvf_goal_indx = self.sample_goals(indx)
             icvf_desired_goal_indx = self.sample_goals(indx) # s+
 
-            icvf_goal_indx = np.where(np.random.rand(batch_size) < 0.5, icvf_desired_goal_indx, icvf_goal_indx)
+            icvf_goal_indx = np.where(np.random.rand(batch_size) < 0.5, icvf_desired_goal_indx, goal_indx)
 
             icvf_success = (indx == icvf_goal_indx) # goal
             icvf_desired_success = (indx == icvf_desired_goal_indx) # final state, s+
