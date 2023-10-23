@@ -17,8 +17,8 @@ import equinox as eqx
 import optax
 from jaxtyping import *
 
-import gymnasium as gym
-import minari
+import gym
+import d4rl
 
 import wandb
 import pyrallis
@@ -28,7 +28,7 @@ class TrainConfig:
     project: str = "CORL"
     group: str = "IQL-D4RL"
     name: str = "IQL_EQX"
-    dataset_id: str = "antmaze-large-diverse-v0"
+    dataset_id: str = "antmaze-large-diverse-v2"
     discount: float = 0.99
     tau: float = 0.005
     beta: float = 10.0
@@ -163,10 +163,11 @@ def wrap_env(
 ) -> gym.Env:
     
     def normalize_state(state):
-        if 'antmaze' in env.spec.id.lower():
-            return (state['observation'] - state_mean) / state_std
-        else:
-            return (state - state_mean) / state_std
+        # if 'antmaze' in env.spec.id.lower():
+        #     return (state['observation'] - state_mean) / state_std
+        # else:
+        #     
+        return (state - state_mean) / state_std
 
     def scale_reward(reward):
         # Please be careful, here reward is multiplied by scale!
@@ -178,22 +179,23 @@ def wrap_env(
     return env
 
 
-def qlearning_dataset(dataset: minari.MinariDataset) -> Dict[str, np.ndarray]:
-    obs, next_obs, actions, rewards, dones = [], [], [], [], []
+# def qlearning_dataset(dataset: minari.MinariDataset) -> Dict[str, np.ndarray]:
+#     obs, next_obs, actions, rewards, dones = [], [], [], [], []
 
-    for idx, episode in enumerate(dataset):
-        obs.append(episode.observations['observation'][:-1].astype(jnp.float32)) # fix for other than antmaze
-        next_obs.append(episode.observations['observation'][1:].astype(jnp.float32))
-        actions.append(episode.actions.astype(jnp.float32))
-        rewards.append(episode.rewards)
-        dones.append(episode.terminations)
-    return {
-        "observations": jnp.concatenate(obs),
-        "actions": jnp.concatenate(actions),
-        "next_observations": jnp.concatenate(next_obs),
-        "rewards": jnp.concatenate(rewards),
-        "terminals": jnp.concatenate(dones),
-    }
+#     for idx, episode in enumerate(dataset):
+#         obs.append(episode.observations['observation'][:-1].astype(jnp.float32)) # fix for other than antmaze
+#         next_obs.append(episode.observations['observation'][1:].astype(jnp.float32))
+#         actions.append(episode.actions.astype(jnp.float32))
+#         episode.rewards[:-1] = False
+#         rewards.append(episode.rewards)
+#         dones.append(episode.terminations)
+#     return {
+#         "observations": jnp.concatenate(obs),
+#         "actions": jnp.concatenate(actions),
+#         "next_observations": jnp.concatenate(next_obs),
+#         "rewards": jnp.concatenate(rewards),
+#         "terminals": jnp.concatenate(dones),
+#     }
 
 def return_reward_range(
     dataset: Dict[str, np.ndarray], max_episode_steps: int
@@ -327,7 +329,7 @@ def update_agent(agent, batch):
         dist = eqx.filter_vmap(actor_net)(batch['observations'])
         
         log_probs = dist.log_prob(batch['actions'])
-        actor_loss = -(exp_a * log_probs[:, None]).mean()
+        actor_loss = -(exp_a * log_probs).mean()
         
         return actor_loss, {
             'actor_loss': actor_loss,
@@ -358,18 +360,19 @@ def train(config: TrainConfig):
         name=config.dataset_id,
         save_code=False,
     )
-    minari.download_dataset(config.dataset_id)
-    dataset = minari.load_dataset(config.dataset_id)
+    # minari.download_dataset(config.dataset_id)
+    # dataset = minari.load_dataset(config.dataset_id)
     
-    eval_env = dataset.recover_environment()
-    if 'antmaze' not in config.dataset_id:
-        state_dim = eval_env.observation_space.shape[0]
-        action_dim = eval_env.action_space.shape[0]
-    else:
-        state_dim = eval_env.observation_space['observation'].shape[0]
-        action_dim = eval_env.action_space.shape[0]
+    # eval_env = dataset.recover_environment()
+    # if 'antmaze' not in config.dataset_id:
+    eval_env = gym.make(config.dataset_id)
+    state_dim = eval_env.observation_space.shape[0]
+    action_dim = eval_env.action_space.shape[0]
+    # else:
+    #     state_dim = eval_env.observation_space['observation'].shape[0]
+    #     action_dim = eval_env.action_space.shape[0]
 
-    qdataset = qlearning_dataset(dataset)
+    qdataset = d4rl.qlearning_dataset(eval_env)
     if config.normalize_reward:
         modify_reward(qdataset, config.dataset_id)
     
@@ -387,7 +390,6 @@ def train(config: TrainConfig):
     
     eval_env = wrap_env(eval_env, state_mean=state_mean, state_std=state_std)
     replay_buffer = ReplayBuffer.create_from_d4rl(qdataset)
-    
     key = jax.random.PRNGKey(seed=config.seed)
     key, q_key, val_key, val_key_target, actor_key, buffer_key = jax.random.split(key, 6)
     
@@ -405,7 +407,7 @@ def train(config: TrainConfig):
     )
     v_learner = TrainTargetState.create(
         model=VNet(key=val_key, state_dim=state_dim),
-        target_model=VNet(key=val_key_target, state_dim=state_dim),
+        target_model=VNet(key=val_key, state_dim=state_dim),
         optim=optax.adam(learning_rate=config.vf_lr)
     )
     actor_learner = TrainState.create(
@@ -429,12 +431,12 @@ def train(config: TrainConfig):
         wandb.log(statistics, step=step)
         
         if step % config.eval_freq == 0 or step == config.max_timesteps - 1:
-            eval_returns = evaluate(eval_env, iql_agent, config.n_episodes, seed=config.seed)
+            eval_returns = evaluate_d4rl(eval_env, iql_agent, config.n_episodes, seed=config.seed)
             wandb.log({"evaluation return": eval_returns.mean()}, step=step)
             
-            with contextlib.suppress(ValueError):
-                normalized_score = minari.get_normalized_score(dataset, eval_returns).mean() * 100
-                wandb.log({"normalized score": normalized_score}, step=step)
+            # with contextlib.suppress(ValueError):
+            #     normalized_score = minari.get_normalized_score(dataset, eval_returns).mean() * 100
+            #     wandb.log({"normalized score": normalized_score}, step=step)
 
 def evaluate(env: gym.Env, actor: IQLagent, num_episodes: int, seed: int):
     print("Evaluating Agent")
@@ -461,7 +463,7 @@ def evaluate_d4rl(env: gym.Env, actor: IQLagent, num_episodes: int, seed: int):
     
     returns = []
     # launch agent for num_episodes times and in each perform actions till done
-    for _ in tqdm(num_episodes):
+    for _ in tqdm(range(num_episodes)):
         obs, done = env.reset(), False
         total_reward = 0.0
         
