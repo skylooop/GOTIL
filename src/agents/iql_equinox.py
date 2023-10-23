@@ -56,7 +56,7 @@ class TrainConfig:
     # path for checkpoints saving, optional
     checkpoints_path: Optional[str] = None
     # training random seed
-    seed: int = 0
+    seed: int = 42
 
 class TrainState(eqx.Module):
     model: eqx.Module
@@ -142,7 +142,6 @@ class ReplayBuffer(eqx.Module):
             "rewards": jnp.asarray(dataset["rewards"], dtype=jnp.float32),
             "next_observations": jnp.asarray(dataset["next_observations"], dtype=jnp.float32),
             "dones": jnp.asarray(dataset['terminals'], dtype=jnp.float32),
-            "masks": jnp.asarray(1.0 - dataset['terminals'], dtype=jnp.float32)
         }
         return cls(data=buffer)
 
@@ -150,7 +149,7 @@ class ReplayBuffer(eqx.Module):
     def size(self):
         return self.data["observations"].shape[0]
 
-    @functools.partial(jax.jit, static_argnums=(2))
+    @functools.partial(jax.jit, static_argnames=["batch_size"])
     def sample_batch(self, key: jax.random.PRNGKey, batch_size: int) -> Dict[str, jax.Array]:
         indices = jax.random.randint(key, shape=(batch_size,), minval=0, maxval=self.size)
         batch = jax.tree_map(lambda arr: arr[indices], self.data)
@@ -187,16 +186,7 @@ def qlearning_dataset(dataset: minari.MinariDataset) -> Dict[str, np.ndarray]:
         next_obs.append(episode.observations['observation'][1:].astype(jnp.float32))
         actions.append(episode.actions.astype(jnp.float32))
         rewards.append(episode.rewards)
-        if "antmaze" in dataset.spec.env_spec.id.lower():
-            dones_float = np.zeros_like(episode.rewards)
-            for i in range(len(dones_float) - 1):
-                if np.linalg.norm(episode.observations['observation'][i + 1] - next_obs[idx][i]) > 1e-6:
-                    dones_float[i] = 1
-                else:
-                    dones_float[i] = 0
-        dones_float[-1] = 1
-        dones.append(dones_float)
-        
+        dones.append(episode.terminations)
     return {
         "observations": jnp.concatenate(obs),
         "actions": jnp.concatenate(actions),
@@ -249,11 +239,10 @@ class QNet(eqx.Module):
                               out_size=1, depth=len(self.hidden_dims), width_size=self.hidden_dims[-1],
                               key=mlp_key)
     
-    @eqx.filter_jit
     def __call__(self, obs, action):
         x = jnp.concatenate([obs, action], axis=-1)
         return self.net(x)
-    
+
 @eqx.filter_vmap(in_axes=dict(ensemble=eqx.if_array(0), state=None, action=None))
 @eqx.filter_vmap(in_axes=dict(ensemble=None, state=0, action=0))
 def eval_ensemble(ensemble, state, action):
@@ -277,20 +266,22 @@ class GaussianPolicy(eqx.Module):
     log_std_min: int = -5.0
     log_std_max: int = 2.0
     temperature: float = 10.0
-    
+    log_stds: Array
+
     def __init__(self, key, state_dim, action_dim, hidden_dims):
         key_mean, key_log_std = jax.random.split(key, 2)
         
         self.net = eqx.nn.MLP(in_size=state_dim,
-                              out_size=action_dim * 2,
+                              out_size=action_dim,
                               width_size=hidden_dims[0],
                               depth=len(hidden_dims),
-                              final_activation=jax.nn.tanh,
                               key=key_mean)
+        
+        self.log_stds = jax.numpy.zeros(shape=(action_dim, ))
     
     def __call__(self, state):
-        means, log_stds = jnp.split(self.net(state), 2, axis=-1)
-        log_sigma = jnp.clip(log_stds, self.log_std_min, self.log_std_max)
+        means = self.net(state)
+        log_sigma = jnp.clip(self.log_stds, self.log_std_min, self.log_std_max)
         dist = FixedDistrax(distrax.MultivariateNormalDiag, means, jnp.exp(log_sigma) * self.temperature)
         return dist
       
@@ -307,81 +298,56 @@ class IQLagent(eqx.Module):
     def eval_actor(self, obs):
         return self.actor_learner.model(obs).mean()
     
-    def q_loss(self, model, batch):
-        next_v = eqx.filter_vmap(self.v_learner.target_model)(batch['next_observations']) # (-0.05)
-        target = batch['rewards'] + 0.99 * batch['masks'] * next_v
-        q1, q2 = eval_ensemble(model, batch['observations'], batch['actions'])
-        q_loss = (((q1 - target) + (q2 - target))**2).mean()
-        return q_loss, {
-            'critic_loss': q_loss,
-            'q1': q1.mean(),
-        }
-    
-    def v_loss(self, model, batch):
-        q1, q2 = eval_ensemble(self.q_learner.model, batch['observations'], batch['actions'])
+@eqx.filter_jit
+def update_agent(agent, batch):
+    def v_loss_fn(v_net):
+        q1, q2 = eval_ensemble(agent.q_learner.model, batch['observations'], batch['actions'])
         q = jnp.minimum(q1, q2)
-        v = eqx.filter_vmap(model)(batch['observations'])
-        value_loss = expectile_loss(q - v).mean() # 0.00659
-        advantage = q - v
+        v = eqx.filter_vmap(v_net)(batch['observations'])
+        value_loss = expectile_loss(q - v).mean()
         return value_loss, {
             'value_loss': value_loss,
-            'v': v.mean(),
-            'abs adv mean': jnp.abs(advantage).mean(),
-            'adv mean': advantage.mean(),
-            'adv max': advantage.max(),
-            'adv min': advantage.min(),
         }
     
-    def actor_loss(self, model, batch):
-        v = eqx.filter_vmap(self.v_learner.model)(batch['observations'])
-        q1, q2 = eval_ensemble(self.q_learner.model, batch['observations'], batch['actions'])
+    def q_loss_fn(q_net):
+        next_v = eqx.filter_vmap(agent.v_learner.target_model)(batch['next_observations'])
+        target = batch['rewards'][:, None] + 0.99 * (1.0 - batch['dones'][:, None]) * next_v
+        q1, q2 = eval_ensemble(q_net, batch['observations'], batch['actions'])
+        q_loss = ((q1 - target)**2 + (q2 - target)**2).mean()
+        return q_loss, {
+            'q_loss': q_loss,
+        }
+    
+    def actor_loss_fn(actor_net):
+        v = eqx.filter_vmap(agent.v_learner.model)(batch['observations'])
+        q1, q2 = eval_ensemble(agent.q_learner.model, batch['observations'], batch['actions'])
         q = jnp.minimum(q1, q2)
         exp_a = jnp.exp((q - v) * 10.0)
         exp_a = jnp.minimum(exp_a, 100.0)
-        dist = eqx.filter_vmap(model)(batch['observations'])
+        dist = eqx.filter_vmap(actor_net)(batch['observations'])
         
         log_probs = dist.log_prob(batch['actions'])
-        actor_loss = -(exp_a * log_probs).mean()
-        sorted_adv = jnp.sort(q-v)[::-1]
+        actor_loss = -(exp_a * log_probs[:, None]).mean()
         
         return actor_loss, {
             'actor_loss': actor_loss,
-            'adv': q - v,
-            'bc_log_probs': log_probs.mean(),
-            'adv median': jnp.median(q - v),
-            'adv top 1%': sorted_adv[int(len(sorted_adv) * 0.01)],
-            'adv top 10%': sorted_adv[int(len(sorted_adv) * 0.1)],
-            'adv top 25%': sorted_adv[int(len(sorted_adv) * 0.25)],
-            'adv top 25%': sorted_adv[int(len(sorted_adv) * 0.25)],
-            'adv top 75%': sorted_adv[int(len(sorted_adv) * 0.75)],
         }    
     
-    @eqx.filter_jit
-    def update_agent(self, batch):
-        def v_loss_fn(v_net):
-            return self.v_loss(model=v_net, batch=batch)
-        def q_loss_fn(q_net):
-            return self.q_loss(model=q_net, batch=batch)
-        def actor_loss_fn(actor_net):
-            return self.actor_loss(actor_net, batch=batch)
-        
-        (val_q, aux_q), q_grads = eqx.filter_value_and_grad(q_loss_fn, has_aux=True)(self.q_learner.model)
-        updated_q_learner = self.q_learner.apply_updates(q_grads)
-        
-        (val_v, aux_v), v_grads = eqx.filter_value_and_grad(v_loss_fn, has_aux=True)(self.v_learner.model)
-        updated_v_learner = self.v_learner.apply_updates(v_grads).soft_update()
-        
-        (val_actor, aux_actor), actor_grads = eqx.filter_value_and_grad(actor_loss_fn, has_aux=True)(self.actor_learner.model)
-        updated_actor_learner = self.actor_learner.apply_updates(actor_grads)
+    (val_v, aux_v), v_grads = eqx.filter_value_and_grad(v_loss_fn, has_aux=True)(agent.v_learner.model)
+    updated_v_learner = agent.v_learner.apply_updates(v_grads).soft_update()
+    
+    (val_actor, aux_actor), actor_grads = eqx.filter_value_and_grad(actor_loss_fn, has_aux=True)(agent.actor_learner.model)
+    updated_actor_learner = agent.actor_learner.apply_updates(actor_grads)
 
-        return dataclasses.replace(
-            self,
-            q_learner = updated_q_learner,
-            v_learner = updated_v_learner,
-            actor_learner = updated_actor_learner
-        ), {"Value Loss": val_v,
-            "Q Loss": val_q,
-            "AWR Loss": val_actor}, {**aux_v, **aux_q, **aux_actor}
+    (val_q, aux_q), q_grads = eqx.filter_value_and_grad(q_loss_fn, has_aux=True)(agent.q_learner.model)
+    updated_q_learner = agent.q_learner.apply_updates(q_grads)
+
+    return dataclasses.replace(
+        agent,
+        q_learner = updated_q_learner,
+        v_learner = updated_v_learner,
+        actor_learner = updated_actor_learner
+    ), {**aux_v, **aux_q, **aux_actor}
 
 @pyrallis.wrap()
 def train(config: TrainConfig):
@@ -423,24 +389,28 @@ def train(config: TrainConfig):
     replay_buffer = ReplayBuffer.create_from_d4rl(qdataset)
     
     key = jax.random.PRNGKey(seed=config.seed)
-    key, q_key, val_key, actor_key, buffer_key = jax.random.split(key, 5)
+    key, q_key, val_key, val_key_target, actor_key, buffer_key = jax.random.split(key, 6)
     
     @eqx.filter_vmap
     def ensemblize(keys):
         return QNet(key=keys, state_dim=state_dim, action_dim=action_dim)
     
+    schedule_fn = optax.cosine_decay_schedule(-config.actor_lr, config.actor_lr)
+    actor_tx = optax.chain(optax.scale_by_adam(),
+                            optax.scale_by_schedule(schedule_fn))
+
     q_learner = TrainState.create(
         model=ensemblize(jax.random.split(q_key, 2)),
         optim=optax.adam(learning_rate=config.qf_lr)
     )
     v_learner = TrainTargetState.create(
         model=VNet(key=val_key, state_dim=state_dim),
-        target_model=VNet(key=val_key, state_dim=state_dim),
+        target_model=VNet(key=val_key_target, state_dim=state_dim),
         optim=optax.adam(learning_rate=config.vf_lr)
     )
     actor_learner = TrainState.create(
         model=GaussianPolicy(key=actor_key, state_dim=state_dim, action_dim=action_dim, hidden_dims=(256, 256)),
-        optim=optax.adam(learning_rate=config.actor_lr)
+        optim=actor_tx
     )
     
     iql_agent = IQLagent(
@@ -451,10 +421,12 @@ def train(config: TrainConfig):
     
     for step in tqdm(range(1, config.max_timesteps + 1)):
         # maybe add jax.lax.scan -> for each epoch update NUM_UPDATES_PER_EPOCH steps
+        buf_key, buffer_key = jax.random.split(buffer_key, 2)
         batch = replay_buffer.sample_batch(key=buffer_key, batch_size=config.batch_size)
-        iql_agent, losses, statistics = iql_agent.update_agent(batch)
-        #print(losses)
-        wandb.log({"Statistics": statistics}, step=step)
+
+        iql_agent, statistics = update_agent(iql_agent, batch)
+
+        wandb.log(statistics, step=step)
         
         if step % config.eval_freq == 0 or step == config.max_timesteps - 1:
             eval_returns = evaluate(eval_env, iql_agent, config.n_episodes, seed=config.seed)
