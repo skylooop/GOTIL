@@ -267,7 +267,6 @@ class GaussianPolicy(eqx.Module):
     net: eqx.Module
     log_std_min: int = -5.0
     log_std_max: int = 2.0
-    temperature: float = 10.0
     log_stds: Array
 
     def __init__(self, key, state_dim, action_dim, hidden_dims):
@@ -277,6 +276,7 @@ class GaussianPolicy(eqx.Module):
                               out_size=action_dim,
                               width_size=hidden_dims[0],
                               depth=len(hidden_dims),
+                              final_activation=jax.nn.relu,
                               key=key_mean)
         
         self.log_stds = jax.numpy.zeros(shape=(action_dim, ))
@@ -284,7 +284,7 @@ class GaussianPolicy(eqx.Module):
     def __call__(self, state):
         means = self.net(state)
         log_sigma = jnp.clip(self.log_stds, self.log_std_min, self.log_std_max)
-        dist = FixedDistrax(distrax.MultivariateNormalDiag, means, jnp.exp(log_sigma) * self.temperature)
+        dist = FixedDistrax(distrax.MultivariateNormalDiag, means, jnp.exp(log_sigma))
         return dist
       
 def expectile_loss(diff, expectile=0.9):
@@ -299,11 +299,11 @@ class IQLagent(eqx.Module):
     @eqx.filter_jit
     def eval_actor(self, obs):
         return self.actor_learner.model(obs).mean()
-    
+
 @eqx.filter_jit
 def update_agent(agent, batch):
     def v_loss_fn(v_net):
-        q1, q2 = eval_ensemble(agent.q_learner.model, batch['observations'], batch['actions'])
+        q1, q2 = eval_ensemble(agent.q_learner.target_model, batch['observations'], batch['actions'])
         q = jnp.minimum(q1, q2)
         v = eqx.filter_vmap(v_net)(batch['observations'])
         value_loss = expectile_loss(q - v).mean()
@@ -312,7 +312,7 @@ def update_agent(agent, batch):
         }
     
     def q_loss_fn(q_net):
-        next_v = eqx.filter_vmap(agent.v_learner.target_model)(batch['next_observations'])
+        next_v = eqx.filter_vmap(agent.v_learner.model)(batch['next_observations'])
         target = batch['rewards'][:, None] + 0.99 * (1.0 - batch['dones'][:, None]) * next_v
         q1, q2 = eval_ensemble(q_net, batch['observations'], batch['actions'])
         q_loss = ((q1 - target)**2 + (q2 - target)**2).mean()
@@ -336,13 +336,13 @@ def update_agent(agent, batch):
         }    
     
     (val_v, aux_v), v_grads = eqx.filter_value_and_grad(v_loss_fn, has_aux=True)(agent.v_learner.model)
-    updated_v_learner = agent.v_learner.apply_updates(v_grads).soft_update()
-    
+    updated_v_learner = agent.v_learner.apply_updates(v_grads)
+
     (val_actor, aux_actor), actor_grads = eqx.filter_value_and_grad(actor_loss_fn, has_aux=True)(agent.actor_learner.model)
     updated_actor_learner = agent.actor_learner.apply_updates(actor_grads)
 
     (val_q, aux_q), q_grads = eqx.filter_value_and_grad(q_loss_fn, has_aux=True)(agent.q_learner.model)
-    updated_q_learner = agent.q_learner.apply_updates(q_grads)
+    updated_q_learner = agent.q_learner.apply_updates(q_grads).soft_update()
 
     return dataclasses.replace(
         agent,
@@ -401,13 +401,13 @@ def train(config: TrainConfig):
     actor_tx = optax.chain(optax.scale_by_adam(),
                             optax.scale_by_schedule(schedule_fn))
 
-    q_learner = TrainState.create(
+    q_learner = TrainTargetState.create(
         model=ensemblize(jax.random.split(q_key, 2)),
+        target_model=ensemblize(jax.random.split(q_key, 2)),
         optim=optax.adam(learning_rate=config.qf_lr)
     )
-    v_learner = TrainTargetState.create(
+    v_learner = TrainState.create(
         model=VNet(key=val_key, state_dim=state_dim),
-        target_model=VNet(key=val_key, state_dim=state_dim),
         optim=optax.adam(learning_rate=config.vf_lr)
     )
     actor_learner = TrainState.create(
@@ -427,13 +427,13 @@ def train(config: TrainConfig):
         batch = replay_buffer.sample_batch(key=buffer_key, batch_size=config.batch_size)
 
         iql_agent, statistics = update_agent(iql_agent, batch)
-
         wandb.log(statistics, step=step)
         
         if step % config.eval_freq == 0 or step == config.max_timesteps - 1:
             eval_returns = evaluate_d4rl(eval_env, iql_agent, config.n_episodes, seed=config.seed)
             wandb.log({"evaluation return": eval_returns.mean()}, step=step)
-            
+            normalized_eval_score = eval_env.get_normalized_score(eval_returns.mean()) * 100.0
+            wandb.log({"D4RL score": normalized_eval_score})
             # with contextlib.suppress(ValueError):
             #     normalized_score = minari.get_normalized_score(dataset, eval_returns).mean() * 100
             #     wandb.log({"normalized score": normalized_score}, step=step)
