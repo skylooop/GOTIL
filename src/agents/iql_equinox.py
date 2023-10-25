@@ -17,7 +17,8 @@ import equinox as eqx
 import optax
 from jaxtyping import *
 
-import gymnasium as gym
+import gym
+import d4rl
 import minari
 
 import wandb
@@ -26,9 +27,9 @@ import pyrallis
 @dataclass
 class TrainConfig:
     project: str = "CORL"
-    group: str = "IQL-D4RL"
+    group: str = "IQL-EQX"
     name: str = "IQL_EQX"
-    dataset_id: str = "antmaze-large-diverse-v0"
+    dataset_id: str = "antmaze-large-diverse-v2"
     discount: float = 0.99
     tau: float = 0.005
     beta: float = 10.0
@@ -36,7 +37,7 @@ class TrainConfig:
     # total gradient updates during training
     max_timesteps: int = int(1e6)
     # maximum size of the replay buffer
-    buffer_size: int = 2_000_000
+    buffer_size: int = 10_000_000
     # training batch size
     batch_size: int = 256
     # whether to normalize states
@@ -71,7 +72,7 @@ class TrainState(eqx.Module):
     
     @eqx.filter_jit
     def apply_updates(self, grads):
-        updates, new_optim_state = self.optim.update(grads, self.optim_state)
+        updates, new_optim_state = self.optim.update(grads, self.optim_state, self.model)
         new_model = eqx.apply_updates(self.model, updates)
         return dataclasses.replace(
             self,
@@ -135,24 +136,37 @@ class ReplayBuffer(eqx.Module):
     data: Dict[str, jax.Array]
 
     @classmethod
-    def create_from_d4rl(cls, dataset) -> "ReplayBuffer":
+    def create_from_d4rl(cls, env, normalize_reward=True, normalize_state=True) -> "ReplayBuffer":
+        dataset = d4rl.qlearning_dataset(env)
+        if normalize_reward:
+            dataset['rewards'] -= 1.0
+        if normalize_state:
+            state_mean, state_std = compute_mean_std(dataset["observations"], eps=1e-3)
+        else:
+            state_mean, state_std = 0, 1
+            
+        dataset["observations"] = normalize_states(
+            dataset["observations"], state_mean, state_std
+        )
+        dataset["next_observations"] = normalize_states(
+            dataset["next_observations"], state_mean, state_std
+        )
         buffer = {
             "observations": jnp.asarray(dataset["observations"], dtype=jnp.float32),
             "actions": jnp.asarray(dataset["actions"], dtype=jnp.float32),
             "rewards": jnp.asarray(dataset["rewards"], dtype=jnp.float32),
             "next_observations": jnp.asarray(dataset["next_observations"], dtype=jnp.float32),
-            "dones": jnp.asarray(dataset['terminals'], dtype=jnp.float32),
-            "masks": jnp.asarray(1.0 - dataset['terminals'], dtype=jnp.float32)
+            "dones": jnp.asarray(dataset['terminals'], dtype=jnp.float32)
         }
-        return cls(data=buffer)
+        return cls(data=buffer), state_mean, state_std
 
     @property
     def size(self):
         return self.data["observations"].shape[0]
 
-    @functools.partial(jax.jit, static_argnums=(2))
+    @functools.partial(jax.jit, static_argnames='batch_size')
     def sample_batch(self, key: jax.random.PRNGKey, batch_size: int) -> Dict[str, jax.Array]:
-        indices = jax.random.randint(key, shape=(batch_size,), minval=0, maxval=self.size)
+        indices = jax.random.randint(key=key, shape=(batch_size, ), minval=0, maxval=self.size)
         batch = jax.tree_map(lambda arr: arr[indices], self.data)
         return batch
 
@@ -164,13 +178,8 @@ def wrap_env(
 ) -> gym.Env:
     
     def normalize_state(state):
-        if 'antmaze' in env.spec.id.lower():
-            return (state['observation'] - state_mean) / state_std
-        else:
-            return (state - state_mean) / state_std
-
+        return (state - state_mean) / state_std
     def scale_reward(reward):
-        # Please be careful, here reward is multiplied by scale!
         return reward_scale * reward
 
     env = gym.wrappers.TransformObservation(env, normalize_state)
@@ -183,19 +192,11 @@ def qlearning_dataset(dataset: minari.MinariDataset) -> Dict[str, np.ndarray]:
     obs, next_obs, actions, rewards, dones = [], [], [], [], []
 
     for idx, episode in enumerate(dataset):
-        obs.append(episode.observations['observation'][:-1].astype(jnp.float32)) # fix for other than antmaze
-        next_obs.append(episode.observations['observation'][1:].astype(jnp.float32))
+        obs.append(episode.observations[:-1].astype(jnp.float32)) # fix for other than antmaze
+        next_obs.append(episode.observations[1:].astype(jnp.float32))
         actions.append(episode.actions.astype(jnp.float32))
         rewards.append(episode.rewards)
-        if "antmaze" in dataset.spec.env_spec.id.lower():
-            dones_float = np.zeros_like(episode.rewards)
-            for i in range(len(dones_float) - 1):
-                if np.linalg.norm(episode.observations['observation'][i + 1] - next_obs[idx][i]) > 1e-6:
-                    dones_float[i] = 1
-                else:
-                    dones_float[i] = 0
-        dones_float[-1] = 1
-        dones.append(dones_float)
+        dones.append(episode.terminations)
         
     return {
         "observations": jnp.concatenate(obs),
@@ -253,11 +254,11 @@ class QNet(eqx.Module):
     def __call__(self, obs, action):
         x = jnp.concatenate([obs, action], axis=-1)
         return self.net(x)
-    
-@eqx.filter_vmap(in_axes=dict(ensemble=eqx.if_array(0), state=None, action=None))
-@eqx.filter_vmap(in_axes=dict(ensemble=None, state=0, action=0))
+
+#@eqx.filter_vmap(in_axes=dict(ensemble=None, state=0, action=0))
+@eqx.filter_vmap(in_axes=dict(ensemble=eqx.if_array(0), state=None, action=None), out_axes=0)
 def eval_ensemble(ensemble, state, action):
-    return ensemble(state, action)
+    return eqx.filter_vmap(ensemble)(state, action)
 
 class VNet(eqx.Module):
     hidden_dims: tuple[int] = (256, 256)
@@ -274,24 +275,25 @@ class VNet(eqx.Module):
 
 class GaussianPolicy(eqx.Module):
     net: eqx.Module
-    log_std_min: int = -5.0
+    
+    log_std_min: int = -10.0
     log_std_max: int = 2.0
     temperature: float = 10.0
     
     def __init__(self, key, state_dim, action_dim, hidden_dims):
-        key_mean, key_log_std = jax.random.split(key, 2)
+        key, key_means, key_log_std = jax.random.split(key, 3)
         
         self.net = eqx.nn.MLP(in_size=state_dim,
-                              out_size=action_dim * 2,
+                              out_size=2 * action_dim,
                               width_size=hidden_dims[0],
                               depth=len(hidden_dims),
-                              final_activation=jax.nn.tanh,
-                              key=key_mean)
-    
+                              key=key)
+        
     def __call__(self, state):
-        means, log_stds = jnp.split(self.net(state), 2, axis=-1)
-        log_sigma = jnp.clip(log_stds, self.log_std_min, self.log_std_max)
-        dist = FixedDistrax(distrax.MultivariateNormalDiag, means, jnp.exp(log_sigma) * self.temperature)
+        means, log_std = jnp.split(self.net(state), 2)
+        log_stds = jnp.clip(log_std, self.log_std_min, self.log_std_max)
+        dist = FixedDistrax(distrax.MultivariateNormalDiag, loc=jax.nn.tanh(means),
+                            scale_diag=jnp.exp(log_stds))
         return dist
       
 def expectile_loss(diff, expectile=0.9):
@@ -307,81 +309,72 @@ class IQLagent(eqx.Module):
     def eval_actor(self, obs):
         return self.actor_learner.model(obs).mean()
     
-    def q_loss(self, model, batch):
-        next_v = eqx.filter_vmap(self.v_learner.target_model)(batch['next_observations']) # (-0.05)
-        target = batch['rewards'] + 0.99 * batch['masks'] * next_v
-        q1, q2 = eval_ensemble(model, batch['observations'], batch['actions'])
-        q_loss = (((q1 - target) + (q2 - target))**2).mean()
-        return q_loss, {
-            'critic_loss': q_loss,
-            'q1': q1.mean(),
-        }
-    
-    def v_loss(self, model, batch):
-        q1, q2 = eval_ensemble(self.q_learner.model, batch['observations'], batch['actions'])
-        q = jnp.minimum(q1, q2)
-        v = eqx.filter_vmap(model)(batch['observations'])
-        value_loss = expectile_loss(q - v).mean() # 0.00659
-        advantage = q - v
-        return value_loss, {
-            'value_loss': value_loss,
-            'v': v.mean(),
-            'abs adv mean': jnp.abs(advantage).mean(),
-            'adv mean': advantage.mean(),
-            'adv max': advantage.max(),
-            'adv min': advantage.min(),
-        }
-    
     def actor_loss(self, model, batch):
         v = eqx.filter_vmap(self.v_learner.model)(batch['observations'])
         q1, q2 = eval_ensemble(self.q_learner.model, batch['observations'], batch['actions'])
         q = jnp.minimum(q1, q2)
+                
         exp_a = jnp.exp((q - v) * 10.0)
         exp_a = jnp.minimum(exp_a, 100.0)
         dist = eqx.filter_vmap(model)(batch['observations'])
         
         log_probs = dist.log_prob(batch['actions'])
-        actor_loss = -(exp_a * log_probs).mean()
-        sorted_adv = jnp.sort(q-v)[::-1]
+        actor_loss = -(exp_a.squeeze() * log_probs).mean()
         
         return actor_loss, {
-            'actor_loss': actor_loss,
-            'adv': q - v,
-            'bc_log_probs': log_probs.mean(),
-            'adv median': jnp.median(q - v),
-            'adv top 1%': sorted_adv[int(len(sorted_adv) * 0.01)],
-            'adv top 10%': sorted_adv[int(len(sorted_adv) * 0.1)],
-            'adv top 25%': sorted_adv[int(len(sorted_adv) * 0.25)],
-            'adv top 25%': sorted_adv[int(len(sorted_adv) * 0.25)],
-            'adv top 75%': sorted_adv[int(len(sorted_adv) * 0.75)],
+            'actor_loss': actor_loss
         }    
     
-    @eqx.filter_jit
-    def update_agent(self, batch):
-        def v_loss_fn(v_net):
-            return self.v_loss(model=v_net, batch=batch)
-        def q_loss_fn(q_net):
-            return self.q_loss(model=q_net, batch=batch)
-        def actor_loss_fn(actor_net):
-            return self.actor_loss(actor_net, batch=batch)
+@eqx.filter_jit
+def update_agent(agent, batch, buffer_key):
+    def v_loss_fn(v_net, q_learner):
+        q1, q2 = eval_ensemble(q_learner, batch['observations'], batch['actions'])
+        q = jnp.minimum(q1, q2)
         
-        (val_q, aux_q), q_grads = eqx.filter_value_and_grad(q_loss_fn, has_aux=True)(self.q_learner.model)
-        updated_q_learner = self.q_learner.apply_updates(q_grads)
+        v = eqx.filter_vmap(v_net)(batch['observations'])
+        value_loss = expectile_loss(q - v, expectile=0.9).mean()
+        advantage = q - v
+        return value_loss, {
+            'value_loss': value_loss,
+            'abs adv mean': jnp.abs(advantage).mean(),
+        }
         
-        (val_v, aux_v), v_grads = eqx.filter_value_and_grad(v_loss_fn, has_aux=True)(self.v_learner.model)
-        updated_v_learner = self.v_learner.apply_updates(v_grads).soft_update()
+    def q_loss_fn(q_net, v_learner):
+        next_v = eqx.filter_vmap(v_learner)(batch['next_observations'])
+        target = batch['rewards'][:, None] + 0.99 * (1.0 - batch['dones'][:, None]) * next_v
+        q1, q2 = eval_ensemble(q_net, batch['observations'], batch['actions'])
+        q_loss = ((q1 - target)**2 + (q2 - target)**2).mean()
+        return q_loss, {
+            'q_loss': q_loss
+        }
         
-        (val_actor, aux_actor), actor_grads = eqx.filter_value_and_grad(actor_loss_fn, has_aux=True)(self.actor_learner.model)
-        updated_actor_learner = self.actor_learner.apply_updates(actor_grads)
+    def actor_loss_fn(actor_net, v_learner, q_learner):
+        v = eqx.filter_vmap(v_learner)(batch['observations'])
+        q1, q2 = eval_ensemble(q_learner, batch['observations'], batch['actions'])
+        q = jnp.minimum(q1, q2)
+                
+        exp_a = jnp.exp((q - v) * 10.0)
+        exp_a = jnp.minimum(exp_a, 100.0)
+        dist = eqx.filter_vmap(actor_net)(batch['observations'])
+        
+        log_probs = dist.log_prob(batch['actions'])
+        actor_loss = -(exp_a.squeeze() * log_probs).mean()
+        
+        return actor_loss, {
+            'actor_loss': actor_loss
+        }    
+    
+    (val_v, aux_v), v_grads = eqx.filter_value_and_grad(v_loss_fn, has_aux=True)(agent.v_learner.model, agent.q_learner.model)
+    updated_v_learner = agent.v_learner.apply_updates(v_grads).soft_update()
+    
+    (val_q, aux_q), q_grads = eqx.filter_value_and_grad(q_loss_fn, has_aux=True)(agent.q_learner.model, agent.v_learner.target_model)
+    updated_q_learner = agent.q_learner.apply_updates(q_grads)
+    
+    (val_actor, aux_actor), actor_grads = eqx.filter_value_and_grad(actor_loss_fn, has_aux=True)(agent.actor_learner.model, agent.v_learner.model, agent.q_learner.model)
+    updated_actor_learner = agent.actor_learner.apply_updates(actor_grads)
 
-        return dataclasses.replace(
-            self,
-            q_learner = updated_q_learner,
-            v_learner = updated_v_learner,
-            actor_learner = updated_actor_learner
-        ), {"Value Loss": val_v,
-            "Q Loss": val_q,
-            "AWR Loss": val_actor}, {**aux_v, **aux_q, **aux_actor}
+    rng, new_buffer_key = jax.random.split(buffer_key, 2)
+    return dataclasses.replace(agent, v_learner=updated_v_learner, q_learner=updated_q_learner, actor_learner=updated_actor_learner), new_buffer_key, {**aux_v, **aux_q, **aux_actor}
 
 @pyrallis.wrap()
 def train(config: TrainConfig):
@@ -392,55 +385,37 @@ def train(config: TrainConfig):
         name=config.dataset_id,
         save_code=False,
     )
-    minari.download_dataset(config.dataset_id)
-    dataset = minari.load_dataset(config.dataset_id)
-    
-    eval_env = dataset.recover_environment()
-    if 'antmaze' not in config.dataset_id:
-        state_dim = eval_env.observation_space.shape[0]
-        action_dim = eval_env.action_space.shape[0]
-    else:
-        state_dim = eval_env.observation_space['observation'].shape[0]
-        action_dim = eval_env.action_space.shape[0]
-
-    qdataset = qlearning_dataset(dataset)
-    if config.normalize_reward:
-        modify_reward(qdataset, config.dataset_id)
-    
-    if config.normalize_state:
-        state_mean, state_std = compute_mean_std(qdataset["observations"], eps=1e-3)
-    else:
-        state_mean, state_std = 0, 1
-        
-    qdataset["observations"] = normalize_states(
-        qdataset["observations"], state_mean, state_std
-    )
-    qdataset["next_observations"] = normalize_states(
-        qdataset["next_observations"], state_mean, state_std
-    )
-    
+    eval_env = gym.make(config.dataset_id)
+    state_dim = eval_env.observation_space.shape[0]
+    action_dim = eval_env.action_space.shape[0]
+    replay_buffer, state_mean, state_std = ReplayBuffer.create_from_d4rl(eval_env)
     eval_env = wrap_env(eval_env, state_mean=state_mean, state_std=state_std)
-    replay_buffer = ReplayBuffer.create_from_d4rl(qdataset)
     
     key = jax.random.PRNGKey(seed=config.seed)
-    key, q_key, val_key, actor_key, buffer_key = jax.random.split(key, 5)
+    key, q_key, val_key_main_model, val_key_target_model, actor_key, buffer_key = jax.random.split(key, 6)
     
     @eqx.filter_vmap
     def ensemblize(keys):
         return QNet(key=keys, state_dim=state_dim, action_dim=action_dim)
     
+    schedule_fn = optax.cosine_decay_schedule(-config.actor_lr, config.max_timesteps)
+    actor_tx = optax.chain(optax.scale_by_adam(),
+                                optax.scale_by_schedule(schedule_fn))
     q_learner = TrainState.create(
         model=ensemblize(jax.random.split(q_key, 2)),
         optim=optax.adam(learning_rate=config.qf_lr)
     )
     v_learner = TrainTargetState.create(
-        model=VNet(key=val_key, state_dim=state_dim),
-        target_model=VNet(key=val_key, state_dim=state_dim),
+        model=VNet(key=val_key_main_model, state_dim=state_dim),
+        target_model=VNet(key=val_key_target_model, state_dim=state_dim),
         optim=optax.adam(learning_rate=config.vf_lr)
     )
     actor_learner = TrainState.create(
-        model=GaussianPolicy(key=actor_key, state_dim=state_dim, action_dim=action_dim, hidden_dims=(256, 256)),
-        optim=optax.adam(learning_rate=config.actor_lr)
+        model=GaussianPolicy(key=actor_key,
+                             state_dim=state_dim,
+                             action_dim=action_dim,
+                             hidden_dims=(256, 256, 256)),
+        optim=actor_tx
     )
     
     iql_agent = IQLagent(
@@ -450,25 +425,18 @@ def train(config: TrainConfig):
     )
     
     for step in tqdm(range(1, config.max_timesteps + 1)):
-        # maybe add jax.lax.scan -> for each epoch update NUM_UPDATES_PER_EPOCH steps
         batch = replay_buffer.sample_batch(key=buffer_key, batch_size=config.batch_size)
-        iql_agent, losses, statistics = iql_agent.update_agent(batch)
-        #print(losses)
-        wandb.log({"Statistics": statistics}, step=step)
+        iql_agent, buffer_key, statistics = update_agent(iql_agent, batch, buffer_key)
+        wandb.log(statistics, step=step)
         
         if step % config.eval_freq == 0 or step == config.max_timesteps - 1:
-            eval_returns = evaluate(eval_env, iql_agent, config.n_episodes, seed=config.seed)
-            wandb.log({"evaluation return": eval_returns.mean()}, step=step)
+            eval_returns = evaluate_d4rl(eval_env, iql_agent, config.n_episodes, seed=config.seed)
+            wandb.log({"Normalized D4RL return": eval_returns.mean()}, step=step)
             
-            with contextlib.suppress(ValueError):
-                normalized_score = minari.get_normalized_score(dataset, eval_returns).mean() * 100
-                wandb.log({"normalized score": normalized_score}, step=step)
-
 def evaluate(env: gym.Env, actor: IQLagent, num_episodes: int, seed: int):
     print("Evaluating Agent")
     
     returns = []
-    # launch agent for num_episodes times and in each perform actions till done
     for _ in tqdm(range(num_episodes)):
         done = False
         obs, info = env.reset(seed=seed+_)
@@ -479,7 +447,7 @@ def evaluate(env: gym.Env, actor: IQLagent, num_episodes: int, seed: int):
             obs, reward, terminated, truncated, info = env.step(jax.device_get(action))
             done = terminated or truncated
             episode_reward += reward
-        returns.append(episode_reward) # per episode
+        returns.append(episode_reward)
         
     return np.asarray(returns)
 
@@ -488,8 +456,7 @@ def evaluate_d4rl(env: gym.Env, actor: IQLagent, num_episodes: int, seed: int):
     print("Evaluating Agent")
     
     returns = []
-    # launch agent for num_episodes times and in each perform actions till done
-    for _ in tqdm(num_episodes):
+    for _ in tqdm(range(num_episodes)):
         obs, done = env.reset(), False
         total_reward = 0.0
         
@@ -497,9 +464,8 @@ def evaluate_d4rl(env: gym.Env, actor: IQLagent, num_episodes: int, seed: int):
             action = actor.eval_actor(obs)
             obs, reward, done, _ = env.step(jax.device_get(action))
             total_reward += reward
-        returns.append(total_reward) # per episode
+        returns.append(env.get_normalized_score(total_reward) * 100.0)
     return np.array(returns)
 
 if __name__ == "__main__":
     train()
-

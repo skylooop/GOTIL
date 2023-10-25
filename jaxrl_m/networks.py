@@ -143,7 +143,7 @@ class Policy(nn.Module):
 
         distribution = distrax.MultivariateNormalDiag(
             loc=means, scale_diag=jnp.exp(log_stds) * temperature
-        ) ##??? why temp here
+        )
         if self.tanh_squash_distribution:
             distribution = TransformedWithMode(
                 distribution, distrax.Block(distrax.Tanh(), ndims=1)

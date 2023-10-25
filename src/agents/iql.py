@@ -7,12 +7,12 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from jaxrl_m.common import TrainState, target_update
-from jaxrl_m.networks import Policy, ValueCritic, Critic, ensemblize
+from jaxrl_m.networks import Policy, Critic, ensemblize
 
 import flax
 import ml_collections
 
-def expectile_loss(diff, expectile=0.8):
+def expectile_loss(diff, expectile=0.9):
     weight = jnp.where(diff > 0, expectile, (1 - expectile))
     return weight * (diff**2)
 
