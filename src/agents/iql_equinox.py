@@ -36,10 +36,8 @@ class TrainConfig:
     iql_tau: float = 0.9 #experctile
     # total gradient updates during training
     max_timesteps: int = int(1e6)
-    # maximum size of the replay buffer
-    buffer_size: int = 10_000_000
     # training batch size
-    batch_size: int = 256
+    batch_size: int = 512
     # whether to normalize states
     normalize_state: bool = True
     # whether to normalize reward (like in IQL)
@@ -51,13 +49,13 @@ class TrainConfig:
     # actor learning rate
     actor_lr: float = 3e-4
     # evaluation frequency, will evaluate every eval_freq training steps
-    eval_freq: int = int(5_000)
+    eval_freq: int = int(50_000)
     # number of episodes to run during evaluation
-    n_episodes: int = 100
+    n_episodes: int = 10
     # path for checkpoints saving, optional
     checkpoints_path: Optional[str] = None
     # training random seed
-    seed: int = 0
+    seed: int = 42
 
 class TrainState(eqx.Module):
     model: eqx.Module
@@ -101,6 +99,7 @@ class TrainTargetState(TrainState):
         )
     
     def apply_updates(self, grads):
+        
         updates, new_optim_state = self.optim.update(grads, self.optim_state)
         new_model = eqx.apply_updates(self.model, updates)
         return dataclasses.replace(
@@ -139,7 +138,8 @@ class ReplayBuffer(eqx.Module):
     def create_from_d4rl(cls, env, normalize_reward=True, normalize_state=True) -> "ReplayBuffer":
         dataset = d4rl.qlearning_dataset(env)
         if normalize_reward:
-            dataset['rewards'] -= 1.0
+            dataset = modify_reward(dataset, env_name=env.spec.id)
+            #dataset['rewards'] -= 1.0
         if normalize_state:
             state_mean, state_std = compute_mean_std(dataset["observations"], eps=1e-3)
         else:
@@ -225,12 +225,13 @@ def return_reward_range(
 def modify_reward(
     dataset: Dict[str, np.ndarray], env_name: str, max_episode_steps: int = 1000
 ):
-    if any(s in env_name for s in ("halfcheetah", "hopper", "walker2d")):
+    if any(s in env_name.lower() for s in ("halfcheetah", "hopper", "walker2d")):
         min_ret, max_ret = return_reward_range(dataset, max_episode_steps)
         dataset["rewards"] /= max_ret - min_ret
         dataset["rewards"] *= max_episode_steps
     elif "antmaze" in env_name:
         dataset["rewards"] -= 1.0
+    return dataset
 
 def compute_mean_std(states: np.ndarray, eps: float) -> Tuple[np.ndarray, np.ndarray]:
     mean = states.mean(0)
@@ -250,12 +251,10 @@ class QNet(eqx.Module):
                               out_size=1, depth=len(self.hidden_dims), width_size=self.hidden_dims[-1],
                               key=mlp_key)
     
-    @eqx.filter_jit
     def __call__(self, obs, action):
         x = jnp.concatenate([obs, action], axis=-1)
         return self.net(x)
 
-#@eqx.filter_vmap(in_axes=dict(ensemble=None, state=0, action=0))
 @eqx.filter_vmap(in_axes=dict(ensemble=eqx.if_array(0), state=None, action=None), out_axes=0)
 def eval_ensemble(ensemble, state, action):
     return eqx.filter_vmap(ensemble)(state, action)
@@ -276,18 +275,18 @@ class VNet(eqx.Module):
 class GaussianPolicy(eqx.Module):
     net: eqx.Module
     
-    log_std_min: int = -10.0
+    log_std_min: int = -20.0
     log_std_max: int = 2.0
     temperature: float = 10.0
     
-    def __init__(self, key, state_dim, action_dim, hidden_dims):
+    def __init__(self, key, state_dim, action_dim, hidden_dims=(256, 256)):
         key, key_means, key_log_std = jax.random.split(key, 3)
         
         self.net = eqx.nn.MLP(in_size=state_dim,
                               out_size=2 * action_dim,
                               width_size=hidden_dims[0],
                               depth=len(hidden_dims),
-                              key=key)
+                              key=key_means)
         
     def __call__(self, state):
         means, log_std = jnp.split(self.net(state), 2)
@@ -306,8 +305,8 @@ class IQLagent(eqx.Module):
     actor_learner: TrainState
     
     @eqx.filter_jit
-    def eval_actor(self, obs):
-        return self.actor_learner.model(obs).mean()
+    def eval_actor(self, key, obs):
+        return jnp.clip(self.actor_learner.model(obs).sample(seed=key), -1.0, 1.0)
     
     def actor_loss(self, model, batch):
         v = eqx.filter_vmap(self.v_learner.model)(batch['observations'])
@@ -341,7 +340,7 @@ def update_agent(agent, batch, buffer_key):
         
     def q_loss_fn(q_net, v_learner):
         next_v = eqx.filter_vmap(v_learner)(batch['next_observations'])
-        target = batch['rewards'][:, None] + 0.99 * (1.0 - batch['dones'][:, None]) * next_v
+        target = batch['rewards'][:, None] + 0.999 * (1.0 - batch['dones'][:, None]) * next_v
         q1, q2 = eval_ensemble(q_net, batch['observations'], batch['actions'])
         q_loss = ((q1 - target)**2 + (q2 - target)**2).mean()
         return q_loss, {
@@ -364,13 +363,13 @@ def update_agent(agent, batch, buffer_key):
             'actor_loss': actor_loss
         }    
     
-    (val_v, aux_v), v_grads = eqx.filter_value_and_grad(v_loss_fn, has_aux=True)(agent.v_learner.model, agent.q_learner.model)
-    updated_v_learner = agent.v_learner.apply_updates(v_grads).soft_update()
+    (val_v, aux_v), v_grads = eqx.filter_value_and_grad(v_loss_fn, has_aux=True)(agent.v_learner.model, agent.q_learner.target_model)
+    updated_v_learner = agent.v_learner.apply_updates(v_grads)
     
-    (val_q, aux_q), q_grads = eqx.filter_value_and_grad(q_loss_fn, has_aux=True)(agent.q_learner.model, agent.v_learner.target_model)
-    updated_q_learner = agent.q_learner.apply_updates(q_grads)
+    (val_q, aux_q), q_grads = eqx.filter_value_and_grad(q_loss_fn, has_aux=True)(agent.q_learner.model, updated_v_learner.model)
+    updated_q_learner = agent.q_learner.apply_updates(q_grads).soft_update()
     
-    (val_actor, aux_actor), actor_grads = eqx.filter_value_and_grad(actor_loss_fn, has_aux=True)(agent.actor_learner.model, agent.v_learner.model, agent.q_learner.model)
+    (val_actor, aux_actor), actor_grads = eqx.filter_value_and_grad(actor_loss_fn, has_aux=True)(agent.actor_learner.model, updated_v_learner.model, updated_q_learner.target_model)
     updated_actor_learner = agent.actor_learner.apply_updates(actor_grads)
 
     rng, new_buffer_key = jax.random.split(buffer_key, 2)
@@ -388,26 +387,24 @@ def train(config: TrainConfig):
     eval_env = gym.make(config.dataset_id)
     state_dim = eval_env.observation_space.shape[0]
     action_dim = eval_env.action_space.shape[0]
-    replay_buffer, state_mean, state_std = ReplayBuffer.create_from_d4rl(eval_env)
+    replay_buffer, state_mean, state_std = ReplayBuffer.create_from_d4rl(eval_env, normalize_reward=config.normalize_reward,
+                                                                         normalize_state=config.normalize_state)
     eval_env = wrap_env(eval_env, state_mean=state_mean, state_std=state_std)
     
     key = jax.random.PRNGKey(seed=config.seed)
-    key, q_key, val_key_main_model, val_key_target_model, actor_key, buffer_key = jax.random.split(key, 6)
+    key, q_key, val_key_main_model, actor_key, buffer_key = jax.random.split(key, 5)
     
     @eqx.filter_vmap
     def ensemblize(keys):
         return QNet(key=keys, state_dim=state_dim, action_dim=action_dim)
     
-    schedule_fn = optax.cosine_decay_schedule(-config.actor_lr, config.max_timesteps)
-    actor_tx = optax.chain(optax.scale_by_adam(),
-                                optax.scale_by_schedule(schedule_fn))
-    q_learner = TrainState.create(
+    q_learner = TrainTargetState.create(
         model=ensemblize(jax.random.split(q_key, 2)),
+        target_model=ensemblize(jax.random.split(q_key, 2)),
         optim=optax.adam(learning_rate=config.qf_lr)
     )
-    v_learner = TrainTargetState.create(
+    v_learner = TrainState.create(
         model=VNet(key=val_key_main_model, state_dim=state_dim),
-        target_model=VNet(key=val_key_target_model, state_dim=state_dim),
         optim=optax.adam(learning_rate=config.vf_lr)
     )
     actor_learner = TrainState.create(
@@ -415,7 +412,7 @@ def train(config: TrainConfig):
                              state_dim=state_dim,
                              action_dim=action_dim,
                              hidden_dims=(256, 256, 256)),
-        optim=actor_tx
+        optim=optax.adam(learning_rate=config.actor_lr)
     )
     
     iql_agent = IQLagent(
@@ -424,48 +421,38 @@ def train(config: TrainConfig):
         actor_learner=actor_learner
     )
     
-    for step in tqdm(range(1, config.max_timesteps + 1)):
+    for step in tqdm(range(1, config.max_timesteps + 1), smoothing=0.1, desc="Training"):
         batch = replay_buffer.sample_batch(key=buffer_key, batch_size=config.batch_size)
         iql_agent, buffer_key, statistics = update_agent(iql_agent, batch, buffer_key)
-        wandb.log(statistics, step=step)
+        wandb.log(statistics)
         
         if step % config.eval_freq == 0 or step == config.max_timesteps - 1:
-            eval_returns = evaluate_d4rl(eval_env, iql_agent, config.n_episodes, seed=config.seed)
-            wandb.log({"Normalized D4RL return": eval_returns.mean()}, step=step)
-            
-def evaluate(env: gym.Env, actor: IQLagent, num_episodes: int, seed: int):
-    print("Evaluating Agent")
-    
-    returns = []
-    for _ in tqdm(range(num_episodes)):
-        done = False
-        obs, info = env.reset(seed=seed+_)
-        episode_reward = 0.0
-        
-        while not done:
-            action = actor.eval_actor(obs)
-            obs, reward, terminated, truncated, info = env.step(jax.device_get(action))
-            done = terminated or truncated
-            episode_reward += reward
-        returns.append(episode_reward)
-        
-    return np.asarray(returns)
+            returns, norm_returns = evaluate_d4rl(eval_env, iql_agent, config.n_episodes, seed=config.seed)
+            wandb.log({"Returns": returns.mean(), 
+                       "Normalized D4RL return": norm_returns.mean()})
 
 def evaluate_d4rl(env: gym.Env, actor: IQLagent, num_episodes: int, seed: int):
     env.seed(seed)
     print("Evaluating Agent")
-    
+
+    key = jax.random.PRNGKey(seed)
     returns = []
+    norm_returns = []
     for _ in tqdm(range(num_episodes)):
         obs, done = env.reset(), False
         total_reward = 0.0
         
         while not done:
-            action = actor.eval_actor(obs)
+            key, sample_key = jax.random.split(key, 2)
+            action = actor.eval_actor(sample_key, obs)
             obs, reward, done, _ = env.step(jax.device_get(action))
+            if reward != 0:
+                print("ASDSADASDS")
+            #env.render()
             total_reward += reward
-        returns.append(env.get_normalized_score(total_reward) * 100.0)
-    return np.array(returns)
+        returns.append(total_reward)
+        norm_returns.append(env.get_normalized_score(total_reward) * 100.0)
+    return np.asarray(returns), np.asarray(norm_returns)
 
 if __name__ == "__main__":
     train()
