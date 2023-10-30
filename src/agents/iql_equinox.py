@@ -26,14 +26,14 @@ import pyrallis
 
 @dataclass
 class TrainConfig:
-    project: str = "CORL"
+    project: str = "OfflineRL"
     group: str = "IQL-EQX"
     name: str = "IQL_EQX"
     dataset_id: str = "antmaze-large-diverse-v2"
-    discount: float = 0.99
+    discount: float = 0.999
     tau: float = 0.005
     beta: float = 10.0
-    iql_tau: float = 0.9 #experctile
+    iql_tau: float = 0.9 #expectile
     # total gradient updates during training
     max_timesteps: int = int(1e6)
     # training batch size
@@ -51,9 +51,10 @@ class TrainConfig:
     # evaluation frequency, will evaluate every eval_freq training steps
     eval_freq: int = int(50_000)
     # number of episodes to run during evaluation
-    n_episodes: int = 10
+    n_episodes: int = 100
     # path for checkpoints saving, optional
     checkpoints_path: Optional[str] = None
+    actor_schedule: str = "none"
     # training random seed
     seed: int = 42
 
@@ -139,7 +140,6 @@ class ReplayBuffer(eqx.Module):
         dataset = d4rl.qlearning_dataset(env)
         if normalize_reward:
             dataset = modify_reward(dataset, env_name=env.spec.id)
-            #dataset['rewards'] -= 1.0
         if normalize_state:
             state_mean, state_std = compute_mean_std(dataset["observations"], eps=1e-3)
         else:
@@ -279,7 +279,7 @@ class GaussianPolicy(eqx.Module):
     log_std_max: int = 2.0
     temperature: float = 10.0
     
-    def __init__(self, key, state_dim, action_dim, hidden_dims=(256, 256)):
+    def __init__(self, key, state_dim, action_dim, hidden_dims):
         key, key_means, key_log_std = jax.random.split(key, 3)
         
         self.net = eqx.nn.MLP(in_size=state_dim,
@@ -303,26 +303,14 @@ class IQLagent(eqx.Module):
     q_learner: TrainState
     v_learner: TrainTargetState
     actor_learner: TrainState
-    
+
+    temperature: float = 10.0
+    expectile: float = 0.9
+    discount: float = 0.999
+
     @eqx.filter_jit
     def eval_actor(self, key, obs):
         return jnp.clip(self.actor_learner.model(obs).sample(seed=key), -1.0, 1.0)
-    
-    def actor_loss(self, model, batch):
-        v = eqx.filter_vmap(self.v_learner.model)(batch['observations'])
-        q1, q2 = eval_ensemble(self.q_learner.model, batch['observations'], batch['actions'])
-        q = jnp.minimum(q1, q2)
-                
-        exp_a = jnp.exp((q - v) * 10.0)
-        exp_a = jnp.minimum(exp_a, 100.0)
-        dist = eqx.filter_vmap(model)(batch['observations'])
-        
-        log_probs = dist.log_prob(batch['actions'])
-        actor_loss = -(exp_a.squeeze() * log_probs).mean()
-        
-        return actor_loss, {
-            'actor_loss': actor_loss
-        }    
     
 @eqx.filter_jit
 def update_agent(agent, batch, buffer_key):
@@ -331,7 +319,7 @@ def update_agent(agent, batch, buffer_key):
         q = jnp.minimum(q1, q2)
         
         v = eqx.filter_vmap(v_net)(batch['observations'])
-        value_loss = expectile_loss(q - v, expectile=0.9).mean()
+        value_loss = expectile_loss(q - v, expectile=agent.expectile).mean()
         advantage = q - v
         return value_loss, {
             'value_loss': value_loss,
@@ -340,7 +328,7 @@ def update_agent(agent, batch, buffer_key):
         
     def q_loss_fn(q_net, v_learner):
         next_v = eqx.filter_vmap(v_learner)(batch['next_observations'])
-        target = batch['rewards'][:, None] + 0.999 * (1.0 - batch['dones'][:, None]) * next_v
+        target = batch['rewards'][:, None] + agent.discount * (1.0 - batch['dones'][:, None]) * next_v
         q1, q2 = eval_ensemble(q_net, batch['observations'], batch['actions'])
         q_loss = ((q1 - target)**2 + (q2 - target)**2).mean()
         return q_loss, {
@@ -352,7 +340,7 @@ def update_agent(agent, batch, buffer_key):
         q1, q2 = eval_ensemble(q_learner, batch['observations'], batch['actions'])
         q = jnp.minimum(q1, q2)
                 
-        exp_a = jnp.exp((q - v) * 10.0)
+        exp_a = jnp.exp((q - v) * agent.temperature)
         exp_a = jnp.minimum(exp_a, 100.0)
         dist = eqx.filter_vmap(actor_net)(batch['observations'])
         
@@ -398,6 +386,13 @@ def train(config: TrainConfig):
     def ensemblize(keys):
         return QNet(key=keys, state_dim=state_dim, action_dim=action_dim)
     
+    if config.actor_schedule == "cosine":
+        schedule_fn = optax.cosine_decay_schedule(-config.actor_lr, config.max_timesteps)
+        actor_tx = optax.chain(optax.scale_by_adam(), optax.scale_by_schedule(schedule_fn))
+        print("Using Cosine scheduler")
+    else:
+        actor_tx = optax.adam(config.actor_lr)
+
     q_learner = TrainTargetState.create(
         model=ensemblize(jax.random.split(q_key, 2)),
         target_model=ensemblize(jax.random.split(q_key, 2)),
@@ -412,13 +407,16 @@ def train(config: TrainConfig):
                              state_dim=state_dim,
                              action_dim=action_dim,
                              hidden_dims=(256, 256, 256)),
-        optim=optax.adam(learning_rate=config.actor_lr)
+        optim=actor_tx
     )
     
     iql_agent = IQLagent(
         q_learner=q_learner,
         v_learner=v_learner,
-        actor_learner=actor_learner
+        actor_learner=actor_learner,
+        expectile=config.iql_tau,
+        discount=config.discount,
+        temperature=config.beta,
     )
     
     for step in tqdm(range(1, config.max_timesteps + 1), smoothing=0.1, desc="Training"):
@@ -432,7 +430,6 @@ def train(config: TrainConfig):
                        "Normalized D4RL return": norm_returns.mean()})
 
 def evaluate_d4rl(env: gym.Env, actor: IQLagent, num_episodes: int, seed: int):
-    env.seed(seed)
     print("Evaluating Agent")
 
     key = jax.random.PRNGKey(seed)
@@ -447,7 +444,7 @@ def evaluate_d4rl(env: gym.Env, actor: IQLagent, num_episodes: int, seed: int):
             action = actor.eval_actor(sample_key, obs)
             obs, reward, done, _ = env.step(jax.device_get(action))
             if reward != 0:
-                print("ASDSADASDS")
+                print("Success!")
             #env.render()
             total_reward += reward
         returns.append(total_reward)

@@ -1,87 +1,37 @@
+# OS params
 import os
+import hydra
 import warnings
+import pickle
+import rootutils
+import functools
+import gzip
+os.environ["HYDRA_FULL_ERROR"] = "1"
 os.environ["D4RL_SUPPRESS_IMPORT_ERROR"] = "1"
 warnings.filterwarnings("ignore")
 
-from absl import app, flags
-from functools import partial
-import numpy as np
+# Configs & Printing
+import wandb
+from omegaconf import DictConfig, OmegaConf
+ROOT = rootutils.setup_root(search_from=__file__, indicator=[".git", "pyproject.toml"],
+                            pythonpath=True, cwd=True)
+
+# Libs
 import jax
 import jax.numpy as jnp
-import gzip
-
-import tqdm
+import numpy as np
+import equinox as eqx
+from tqdm.auto import tqdm
+from jaxrl_m.wandb import setup_wandb
 
 from src.agents import hiql, icvf
+from src.gc_dataset import GCSDataset
+from src.utils import record_video
 from src import d4rl_utils, d4rl_ant, ant_diagnostics, viz_utils
 from xmagical_ext import xmagical_utils
 
-from src.gc_dataset import GCSDataset
-from jaxrl_m.wandb import setup_wandb, default_wandb_config
-import wandb
 from jaxrl_m.evaluation import supply_rng, evaluate_with_trajectories, EpisodeMonitor
 from xmagical_ext.xmagical_utils import evaluate_with_trajectories_xmagical
-from ml_collections import config_flags
-import pickle
-import equinox as eqx
-
-from src.utils import record_video
-
-FLAGS = flags.FLAGS 
-flags.DEFINE_string('env_name', 'antmaze-umaze-v2', '') #antmaze-large-diverse-v2
-flags.DEFINE_string('save_dir', f'experiment_output/', '')
-flags.DEFINE_string('run_group', 'baseline', '')
-flags.DEFINE_integer('seed', 0, '')
-flags.DEFINE_integer('eval_episodes', 50, '')
-flags.DEFINE_integer('num_video_episodes', 2, '')
-flags.DEFINE_integer('log_interval', 1000, '')
-flags.DEFINE_integer('eval_interval', 10000, '')
-flags.DEFINE_integer('save_interval', 100000, '')
-flags.DEFINE_integer('batch_size', 1024, '')
-flags.DEFINE_integer('pretrain_steps', 1000000, '')
-
-flags.DEFINE_integer('use_layer_norm', 1, '')
-flags.DEFINE_integer('value_hidden_dim', 512, '')
-flags.DEFINE_integer('value_num_layers', 3, '')
-flags.DEFINE_integer('use_rep', 1, '') ####
-flags.DEFINE_integer('rep_dim', None, '')
-flags.DEFINE_enum('rep_type', 'state', ['state', 'diff', 'concat'], '')
-flags.DEFINE_integer('policy_train_rep', 0, '')
-flags.DEFINE_integer('use_waypoints', 1, '')
-flags.DEFINE_integer('way_steps', 25, '')
-
-flags.DEFINE_float('pretrain_expectile', 0.7, '')
-flags.DEFINE_float('p_randomgoal', 0.3, '')
-flags.DEFINE_float('p_trajgoal', 0.5, '')
-flags.DEFINE_float('p_currgoal', 0.2, '')
-flags.DEFINE_float('high_p_randomgoal', 0.3, '')
-flags.DEFINE_integer('geom_sample', 1, '')
-flags.DEFINE_float('discount', 0.99, '')
-flags.DEFINE_float('temperature', 1, '')
-flags.DEFINE_float('high_temperature', 1, '')
-
-flags.DEFINE_integer('visual', 0, '')
-flags.DEFINE_string('encoder', 'impala', '')
-
-flags.DEFINE_string('algo_name', "hiql", '')
-
-
-# FOR X-MAGICAL
-flags.DEFINE_enum('modality', 'gripper', ['gripper', 'shortstick', 'mediumstick', 'longstick'], 'Modality name')
-flags.DEFINE_enum('video_type', 'same', ['same', 'cross', 'all'], 'Type of video data to train on (only modality, all but modality, or all)')
-flags.DEFINE_string('xmagical_expert_path', "xmagical_ext/xmagical_replay", "Path to dataset with expert demonstrations.")
-
-wandb_config = default_wandb_config()
-wandb_config.update({
-    'project': 'RLJAX',
-    'group': 'ICVF_Equinox',
-    'name': '{env_name}',
-})
-
-config_flags.DEFINE_config_dict('wandb', wandb_config, lock_config=False)
-
-gcdataset_config = GCSDataset.get_default_config()
-config_flags.DEFINE_config_dict('gcdataset', gcdataset_config, lock_config=False)
 
 @jax.jit
 def get_debug_statistics_hiql(agent, batch):
@@ -90,11 +40,8 @@ def get_debug_statistics_hiql(agent, batch):
 
     s = batch['observations']
     g = batch['goals']
-
     info = get_info(s, g)
-
     stats = {}
-
     stats.update({
         'v': info['v'].mean(),
     })
@@ -166,81 +113,55 @@ def get_traj_v(agent, trajectory):
         'dist_to_middle': all_values[:, all_values.shape[1] // 2],
     }
 
-def main(_):
-    exp_name = ''
-    exp_name += f'{FLAGS.wandb["name"]}'
-
-    if FLAGS.algo_name == "hiql":
-        config_flags.DEFINE_config_dict('config', hiql.get_default_config(), lock_config=False)
-    elif FLAGS.algo_name == "icvf":
-        config_flags.DEFINE_config_dict('config', icvf.get_default_config(), lock_config=False)
-    elif FLAGS.algo_name == "cilot":
-        config_flags.DEFINE_config_dict('config', cilot.get_default_config(), lock_config=False)
-        
-    FLAGS.gcdataset['p_randomgoal'] = FLAGS.p_randomgoal
-    FLAGS.gcdataset['p_trajgoal'] = FLAGS.p_trajgoal
-    FLAGS.gcdataset['p_currgoal'] = FLAGS.p_currgoal
-    FLAGS.gcdataset['geom_sample'] = FLAGS.geom_sample
-    FLAGS.gcdataset['high_p_randomgoal'] = FLAGS.high_p_randomgoal
-    FLAGS.gcdataset['way_steps'] = FLAGS.way_steps
-    FLAGS.gcdataset['discount'] = FLAGS.discount
-    FLAGS.config['pretrain_expectile'] = FLAGS.pretrain_expectile
-    FLAGS.config['discount'] = FLAGS.discount
-    FLAGS.config['temperature'] = FLAGS.temperature
-    FLAGS.config['high_temperature'] = FLAGS.high_temperature
-    FLAGS.config['use_waypoints'] = FLAGS.use_waypoints
-    FLAGS.config['way_steps'] = FLAGS.way_steps
-    FLAGS.config['value_hidden_dims'] = (FLAGS.value_hidden_dim,) * FLAGS.value_num_layers
-    FLAGS.config['use_rep'] = FLAGS.use_rep
-    FLAGS.config['rep_dim'] = FLAGS.rep_dim
-    FLAGS.config['policy_train_rep'] = FLAGS.policy_train_rep
-
-    # Create wandb logger
-    params_dict = {**FLAGS.gcdataset.to_dict(), **FLAGS.config.to_dict()}
-    FLAGS.wandb['name'] = FLAGS.wandb['exp_descriptor'] = exp_name
-    FLAGS.wandb['group'] = FLAGS.wandb['exp_prefix'] = FLAGS.run_group
-    setup_wandb(params_dict, **FLAGS.wandb)
-
-    # FLAGS.save_dir = os.path.join(FLAGS.save_dir, wandb.run.project, wandb.config.exp_prefix, wandb.config.experiment_id)
-    # os.makedirs(FLAGS.save_dir, exist_ok=True)
-
+@hydra.main(version_base="1.4", config_path=str(ROOT/"configs"), config_name="base.yaml")
+def main(config: DictConfig):
+    print(OmegaConf.to_yaml(config))
+    setup_wandb(hyperparam_dict=dict(config),
+                      entity=None,
+                      project=config.logger.project,
+                      group=config.logger.group,
+                      name=config.Env.dataset_id + "testv3")
+    
     goal_info = None
     discrete = False
-    if 'antmaze' in FLAGS.env_name:
-        env_name = FLAGS.env_name
-        if 'ultra' in FLAGS.env_name:
+    if 'antmaze' in config.Env.dataset_id.lower():
+        env_name = config.Env.dataset_id.lower()
+        if 'ultra' in env_name:
             import d4rl_ext
             import gym
             env = gym.make(env_name)
-            env = EpisodeMonitor(env)
         else:
-            env = d4rl_utils.make_env(env_name)
-        
+            import d4rl
+            import gym
+            env = gym.make(env_name)
+        env = EpisodeMonitor(env)
         # RUN generate_antmaze_random.py
         # offline ds - random noisy data + some successful trajs
         # offline_dataset = get_dataset("d4rl_ext/antmaze_demos/antmaze-umaze-v2-randomstart-noiserandomaction.hdf5")
         # offline_dataset = d4rl_utils.get_dataset(env, FLAGS.env_name, dataset=offline_dataset)
         # TODO: Add to ds above some successful trajs
         
-        dataset = d4rl_utils.get_dataset(env, FLAGS.env_name) # expert trajectories from D4RL
-        dataset = dataset.copy({'rewards': dataset['rewards'] - 1.0})
+        dataset = d4rl_utils.get_dataset(env, 
+                                         gcrl=config.Env.gcrl, # for GCRL, just change terminals
+                                         normalize_states=config.Env.normalize_states,
+                                         normalize_rewards=config.Env.normalize_rewards)
         
-        os.environ['CUDA_VISIBLE_DEVICES']="4"
+        os.environ['CUDA_VISIBLE_DEVICES']="4" # for headless server
         env.render(mode='rgb_array', width=200, height=200)
         os.environ['CUDA_VISIBLE_DEVICES']="0,1,2,3,4"
         
-        if 'large' in FLAGS.env_name:
+        if 'large' in env_name:
             env.viewer.cam.lookat[0] = 18
             env.viewer.cam.lookat[1] = 12
             env.viewer.cam.distance = 50
             env.viewer.cam.elevation = -90
             
             viz_env, viz_dataset = d4rl_ant.get_env_and_dataset(env_name)
-            viz = ant_diagnostics.Visualizer(env_name, viz_env, viz_dataset, discount=FLAGS.discount)
+            viz = ant_diagnostics.Visualizer(env_name, viz_env, viz_dataset, discount=config.Env.discount)
             init_state = np.copy(viz_dataset['observations'][0])
             init_state[:2] = (12.5, 8)
 
-        elif 'ultra' in FLAGS.env_name:
+        elif 'ultra' in env_name:
             env.viewer.cam.lookat[0] = 26
             env.viewer.cam.lookat[1] = 18
             env.viewer.cam.distance = 70
@@ -251,21 +172,21 @@ def main(_):
             env.viewer.cam.distance = 50
             env.viewer.cam.elevation = -90
 
-    elif "gripper" in FLAGS.env_name:
-        env = xmagical_utils.make_env(FLAGS.modality, visual="State")
-        if FLAGS.video_type == 'same':
-            dataset = xmagical_utils.get_dataset(FLAGS.modality, dir_name=FLAGS.xmagical_expert_path)
-        elif FLAGS.video_type == 'cross':
-            dataset = xmagical_utils.crossembodiment_dataset(FLAGS.modality, FLAGS.xmagical_expert_path)
-        elif FLAGS.video_type == 'all':
-            dataset = xmagical_utils.crossembodiment_dataset(None, FLAGS.xmagical_expert_path)
+    elif "gripper" in env_name:
+        env = xmagical_utils.make_env(config.Env.modality, visual="State")
+        if config.Env.video_type == 'same':
+            dataset = xmagical_utils.get_dataset(config.Env.modality, dir_name=config.Env.xmagical_expert_path)
+        elif config.Env.video_type == 'cross':
+            dataset = xmagical_utils.crossembodiment_dataset(config.Env.modality, config.Env.xmagical_expert_path)
+        else:
+            dataset = xmagical_utils.crossembodiment_dataset(None, config.Env.xmagical_expert_path)
 
-    elif 'kitchen' in FLAGS.env_name:
-        env = d4rl_utils.make_env(FLAGS.env_name)
-        dataset = d4rl_utils.get_dataset(env, FLAGS.env_name, filter_terminals=True)
+    elif 'kitchen' in env_name:
+        env = d4rl_utils.make_env(env_name)
+        dataset = d4rl_utils.get_dataset(env, env_name, filter_terminals=True)
         dataset = dataset.copy({'observations': dataset['observations'][:, :30], 'next_observations': dataset['next_observations'][:, :30]})
     
-    elif 'calvin' in FLAGS.env_name:
+    elif 'calvin' in env_name:
         from src.envs.calvin import CalvinEnv
         from hydra import compose, initialize
         from src.envs.gym_env import GymWrapper
@@ -307,8 +228,8 @@ def main(_):
         dataset = dict()
         for key in ds[0].keys():
             dataset[key] = np.concatenate([d[key] for d in ds], axis=0)
-        dataset = d4rl_utils.get_dataset(None, FLAGS.env_name, dataset=dataset)
-    elif 'procgen' in FLAGS.env_name:
+        dataset = d4rl_utils.get_dataset(None, env_name, dataset=dataset)
+    elif 'procgen' in env_name:
         from src.envs.procgen_env import ProcgenWrappedEnv, get_procgen_dataset
         import matplotlib
 
@@ -318,17 +239,18 @@ def main(_):
         env_name = 'maze'
         env = ProcgenWrappedEnv(n_processes, env_name, 1, 1)
 
-        if FLAGS.env_name == 'procgen-500':
-            dataset = get_procgen_dataset('data/procgen/level500.npz', state_based=('state' in FLAGS.env_name))
+        if env_name == 'procgen-500':
+            dataset = get_procgen_dataset('data/procgen/level500.npz', state_based=('state' in env_name))
             min_level, max_level = 0, 499
-        elif FLAGS.env_name == 'procgen-1000':
-            dataset = get_procgen_dataset('data/procgen/level1000.npz', state_based=('state' in FLAGS.env_name))
+        elif env_name == 'procgen-1000':
+            dataset = get_procgen_dataset('data/procgen/level1000.npz', state_based=('state' in env_name))
             min_level, max_level = 0, 999
         else:
             raise NotImplementedError
 
         # Test on large levels having >=20 border states
-        large_levels = [12, 34, 35, 55, 96, 109, 129, 140, 143, 163, 176, 204, 234, 338, 344, 369, 370, 374, 410, 430, 468, 470, 476, 491] + [5034, 5046, 5052, 5080, 5082, 5142, 5244, 5245, 5268, 5272, 5283, 5335, 5342, 5366, 5375, 5413, 5430, 5474, 5491]
+        large_levels = [12, 34, 35, 55, 96, 109, 129, 140, 143, 163, 176, 204, 234, 338, 344, 369, 370, 374, 410, 430, 468, 470, 476, 491] + \
+            [5034, 5046, 5052, 5080, 5082, 5142, 5244, 5245, 5268, 5272, 5283, 5335, 5342, 5366, 5375, 5413, 5430, 5474, 5491]
         goal_infos = []
         goal_infos.append({'eval_level': [level for level in large_levels if min_level <= level <= max_level], 'eval_level_name': 'train'})
         goal_infos.append({'eval_level': [level for level in large_levels if level > max_level], 'eval_level_name': 'test'})
@@ -345,176 +267,176 @@ def main(_):
         raise NotImplementedError
 
     env.reset()
-    pretrain_dataset = GCSDataset(dataset, **FLAGS.gcdataset.to_dict())
-    total_steps = FLAGS.pretrain_steps 
+    if config.GoalDS:
+        gc_dataset = GCSDataset(dataset, **dict(config.GoalDS), discount=config.Env.discount)
+        if 'antmaze' in env_name:
+            example_trajectory = gc_dataset.sample(50, indx=np.arange(1000, 1050))
+        elif 'kitchen' in env_name:
+            example_trajectory = gc_dataset.sample(50, indx=np.arange(0, 50))
+        elif 'calvin' in env_name:
+            example_trajectory = gc_dataset.sample(50, indx=np.arange(0, 50))
+        elif 'procgen-500' in env_name:
+            example_trajectory = gc_dataset.sample(50, indx=np.arange(5000, 5050))
+        elif 'procgen-1000' in env_name:
+            example_trajectory = gc_dataset.sample(50, indx=np.arange(5000, 5050))
+        else:
+            pass
+            #TODO
+    total_steps = config.pretrain_steps 
     example_batch = dataset.sample(1)
-        
-    if 'antmaze' in FLAGS.env_name:
-        example_trajectory = pretrain_dataset.sample(50, indx=np.arange(1000, 1050))
-    elif 'kitchen' in FLAGS.env_name:
-        example_trajectory = pretrain_dataset.sample(50, indx=np.arange(0, 50))
-    elif 'calvin' in FLAGS.env_name:
-        example_trajectory = pretrain_dataset.sample(50, indx=np.arange(0, 50))
-    elif 'procgen-500' in FLAGS.env_name:
-        example_trajectory = pretrain_dataset.sample(50, indx=np.arange(5000, 5050))
-    elif 'procgen-1000' in FLAGS.env_name:
-        example_trajectory = pretrain_dataset.sample(50, indx=np.arange(5000, 5050))
-    else:
-        pass
-        #TODO
 
-    if FLAGS.algo_name == "hiql":
-        agent = hiql.create_learner(FLAGS.seed,
-                                    example_batch['observations'],
-                                    example_batch['actions'] if not discrete else example_action,
-                                    visual=FLAGS.visual,
-                                    encoder=FLAGS.encoder,
+    if config.algo.algo_name == "hiql":
+        agent = hiql.create_learner(seed=config.seed,
+                                    observations=example_batch['observations'],
+                                    actions=example_batch['actions'] if not discrete else example_action,
                                     discrete=discrete,
-                                    use_layer_norm=FLAGS.use_layer_norm,
-                                    rep_type=FLAGS.rep_type,
-                                    **FLAGS.config)
-    elif FLAGS.algo_name == "icvf":
-        agent = icvf.create_learner(FLAGS.seed,
+                                    **dict(config.algo))
+    elif config.algo.algo_name == "icvf":
+        agent = icvf.create_learner(config.seed,
                                     example_batch['observations'],)
                                     # num_ensemble_vals = 2,
                                     # use_layer_norm=bool(FLAGS.use_layer_norm))
          
-    elif FLAGS.algo_name == "cilot":
-        pretrain_offline_dataset = GCSDataset(offline_dataset, **FLAGS.gcdataset.to_dict())
-        joint_icvf = cilot.create_joint_learner(FLAGS.seed,
-                                    offline_ds_obs=offline_dataset['observations'],
-                                    expert_ds_obs=example_batch['observations'], #from d4rl
-                                    encoder=None,
-                                    intention_book="uniform")
+    # elif FLAGS.algo_name == "cilot":
+    #     pretrain_offline_dataset = GCSDataset(offline_dataset, **FLAGS.gcdataset.to_dict())
+    #     joint_icvf = cilot.create_joint_learner(FLAGS.seed,
+    #                                 offline_ds_obs=offline_dataset['observations'],
+    #                                 expert_ds_obs=example_batch['observations'], #from d4rl
+    #                                 encoder=None,
+    #                                 intention_book="uniform")
         
-    for i in tqdm.tqdm(range(1, total_steps + 1),
+    for i in tqdm(range(1, total_steps + 1),
                        smoothing=0.1,
                        dynamic_ncols=True):
-        
-        pretrain_batch = pretrain_dataset.sample(FLAGS.batch_size)
-        if FLAGS.algo_name == "cilot":
-            if i < total_steps / 2:
-                agent, update_info = joint_icvf.pretrain_expert(pretrain_batch)
-            else:
-                agent_batch_data = pretrain_offline_dataset.sample(FLAGS.batch_size)
-                agent, update_info = joint_icvf.pretrain_agent(agent_batch_data)
-
+        if config.GoalDS:
+            pretrain_batch = gc_dataset.sample(config.batch_size)
         else:
-            agent, update_info = supply_rng(agent.pretrain_update)(pretrain_batch)
+            pretrain_batch = dataset.sample(config.batch_size)
             
-        if i % FLAGS.log_interval == 0 and FLAGS.algo_name == "hiql":
+        # if config.algo_name == "cilot":
+        #     if i < total_steps / 2:
+        #         agent, update_info = joint_icvf.pretrain_expert(pretrain_batch)
+        #     else:
+        #         agent_batch_data = pretrain_offline_dataset.sample(FLAGS.batch_size)
+        #         agent, update_info = joint_icvf.pretrain_agent(agent_batch_data)
+
+        #else:
+        agent, update_info = supply_rng(agent.pretrain_update, rng=jax.random.PRNGKey(config.seed))(pretrain_batch)
+            
+        if i % config.log_interval == 0 and config.algo.algo_name == "hiql":
             debug_statistics = get_debug_statistics_hiql(agent, pretrain_batch)
             train_metrics = {f'training/{k}': v for k, v in update_info.items()}
             train_metrics.update({f'training_stats/{k}': v for k, v in debug_statistics.items()})
             wandb.log(train_metrics, step=i)
 
-        elif i % FLAGS.log_interval == 0 and FLAGS.algo_name == "cilot":
-            if agent.cur_processor == "expert":
-                # codebook - embedding (instead of z) 
-                # try first psi(intent) = z - vector for OT
-                name = "expert"
-                agent = agent.expert_icvf
-            else:
-                # V(s, z)
-                # policy - outputs z and action
-                name = "agent"
-                agent = agent.agent_icvf
+        # elif i % FLAGS.log_interval == 0 and FLAGS.algo_name == "cilot":
+        #     if agent.cur_processor == "expert":
+        #         # codebook - embedding (instead of z) 
+        #         # try first psi(intent) = z - vector for OT
+        #         name = "expert"
+        #         agent = agent.expert_icvf
+        #     else:
+        #         # V(s, z)
+        #         # policy - outputs z and action
+        #         name = "agent"
+        #         agent = agent.agent_icvf
                 
-            debug_statistics = get_debug_statistics_icvf(agent, pretrain_batch)
-            train_metrics = {f'training/{name}/{k}': v for k, v in update_info.items()}
-            train_metrics.update({f'training_stats/{name}/{k}': v for k, v in debug_statistics.items()})
-            wandb.log(train_metrics, step=i)
+            # debug_statistics = get_debug_statistics_icvf(agent, pretrain_batch)
+            # train_metrics = {f'training/{name}/{k}': v for k, v in update_info.items()}
+            # train_metrics.update({f'training_stats/{name}/{k}': v for k, v in debug_statistics.items()})
+            # wandb.log(train_metrics, step=i)
             
-        if i % FLAGS.log_interval == 0 and FLAGS.algo_name == "icvf":
-            train_metrics = {f'training/{k}': v for k, v in update_info.items()}
-            wandb.log(train_metrics, step=i)
+        # if i % FLAGS.log_interval == 0 and FLAGS.algo_name == "icvf":
+        #     train_metrics = {f'training/{k}': v for k, v in update_info.items()}
+        #     wandb.log(train_metrics, step=i)
             
-            eval_metrics = {}
+        #     eval_metrics = {}
             
-            traj_metrics = get_traj_icvf(agent, example_trajectory)
-            value_viz = viz_utils.make_visual_no_image(
-                traj_metrics,
-                [partial(viz_utils.visualize_metric, metric_name=k) for k in traj_metrics.keys()]
-            )
-            eval_metrics['value_traj_viz'] = wandb.Image(value_viz)
-            image_v = d4rl_ant.gcvalue_image(
-                    viz_env,
-                    viz_dataset,
-                    partial(get_v_zz, agent),
-                )
-            image_icvf = d4rl_ant.gcicvf_image(
-                    viz_env,
-                    viz_dataset,
-                    partial(get_gcvalue_icvf, agent)
-                )
-            eval_metrics['ICVF function'] = wandb.Image(image_icvf)
-            eval_metrics['V function'] = wandb.Image(image_v)
-            wandb.log(eval_metrics, step=i)
+        #     traj_metrics = get_traj_icvf(agent, example_trajectory)
+        #     value_viz = viz_utils.make_visual_no_image(
+        #         traj_metrics,
+        #         [functools.partial(viz_utils.visualize_metric, metric_name=k) for k in traj_metrics.keys()]
+        #     )
+        #     eval_metrics['value_traj_viz'] = wandb.Image(value_viz)
+        #     image_v = d4rl_ant.gcvalue_image(
+        #             viz_env,
+        #             viz_dataset,
+        #             functools.partial(get_v_zz, agent),
+        #         )
+        #     image_icvf = d4rl_ant.gcicvf_image(
+        #             viz_env,
+        #             viz_dataset,
+        #             functools.partial(get_gcvalue_icvf, agent)
+        #         )
+        #     eval_metrics['ICVF function'] = wandb.Image(image_icvf)
+        #     eval_metrics['V function'] = wandb.Image(image_v)
+        #     wandb.log(eval_metrics, step=i)
             
-        if i % FLAGS.eval_interval == 0 and FLAGS.algo_name == "hiql":
-            policy_fn = partial(supply_rng(agent.sample_actions), discrete=discrete)
-            high_policy_fn = partial(supply_rng(agent.sample_high_actions))
+        if i % config.eval_interval == 0 and config.algo.algo_name == "hiql":
+            policy_fn = functools.partial(supply_rng(agent.sample_actions), discrete=discrete)
+            high_policy_fn = functools.partial(supply_rng(agent.sample_high_actions))
             policy_rep_fn = agent.get_policy_rep
-            base_observation = jax.tree_map(lambda arr: arr[0], pretrain_dataset.dataset['observations'])
-            if 'procgen' in FLAGS.env_name:
+            base_observation = jax.tree_map(lambda arr: arr[0], gc_dataset.dataset['observations'])
+            
+            if 'procgen' in env_name:
                 eval_metrics = {}
                 for goal_info in goal_infos:
                     eval_info, trajs, renders = evaluate_with_trajectories(
-                        policy_fn, high_policy_fn, policy_rep_fn, env, env_name=FLAGS.env_name, num_episodes=FLAGS.eval_episodes,
+                        policy_fn, high_policy_fn, policy_rep_fn, env, env_name=env_name, num_episodes=config.eval_episodes,
                         base_observation=base_observation, num_video_episodes=0,
-                        use_waypoints=FLAGS.use_waypoints,
+                        use_waypoints=config.algo.use_waypoints,
                         eval_temperature=0, epsilon=0.05,
-                        goal_info=goal_info, config=FLAGS.config,
+                        goal_info=goal_info, config=dict(config.algo),
                     )
                     eval_metrics.update({f'evaluation/level{goal_info["eval_level_name"]}_{k}': v for k, v in eval_info.items()})
             
-            if 'gripper' in FLAGS.env_name:
-                indx = jax.numpy.argmax(pretrain_dataset.dataset['masks'] == 0)
-                goal = jax.tree_map(lambda arr: arr[indx], pretrain_dataset.dataset['observations'])
+            elif 'gripper' in env_name:
+                indx = jax.numpy.argmax(gc_dataset.dataset['masks'] == 0)
+                goal = jax.tree_map(lambda arr: arr[indx], gc_dataset.dataset['observations'])
                 eval_info, video, goal = evaluate_with_trajectories_xmagical(
-                    policy_fn, high_policy_fn, policy_rep_fn, env, num_episodes=FLAGS.eval_episodes,
-                    base_observation=base_observation, goal=goal, num_video_episodes=FLAGS.num_video_episodes,
-                    use_waypoints=FLAGS.use_waypoints,
+                    policy_fn, high_policy_fn, policy_rep_fn, env, num_episodes=config.eval_episodes,
+                    base_observation=base_observation, goal=goal, num_video_episodes=config.num_video_episodes,
+                    use_waypoints=config.algo.use_waypoints,
                     eval_temperature=0,
-                    goal_info=goal_info, config=FLAGS.config,)
+                    goal_info=goal_info, config=dict(config.algo))
                 
             else:
                 eval_info, trajs, renders = evaluate_with_trajectories(
-                    policy_fn, high_policy_fn, policy_rep_fn, env, env_name=FLAGS.env_name, num_episodes=FLAGS.eval_episodes,
-                    base_observation=base_observation, num_video_episodes=FLAGS.num_video_episodes,
-                    use_waypoints=FLAGS.use_waypoints,
+                    policy_fn, high_policy_fn, policy_rep_fn, env, env_name=env_name, num_episodes=config.eval_episodes,
+                    base_observation=base_observation, num_video_episodes=config.num_video_episodes,
+                    use_waypoints=config.algo.use_waypoints,
                     eval_temperature=0,
-                    goal_info=goal_info, config=FLAGS.config,
+                    goal_info=goal_info, config=dict(config.algo),
                 )
                 eval_metrics = {f'evaluation/{k}': v for k, v in eval_info.items()}
 
-                if FLAGS.num_video_episodes > 0:
+                if config.num_video_episodes > 0:
                     video = record_video('Video', i, renders=renders)
                     eval_metrics['video'] = video
 
             traj_metrics = get_traj_v(agent, example_trajectory)
             value_viz = viz_utils.make_visual_no_image(
                 traj_metrics,
-                [partial(viz_utils.visualize_metric, metric_name=k) for k in traj_metrics.keys()]
+                [functools.partial(viz_utils.visualize_metric, metric_name=k) for k in traj_metrics.keys()]
             )
             eval_metrics['value_traj_viz'] = wandb.Image(value_viz)
 
-            if 'antmaze' in FLAGS.env_name and 'large' in FLAGS.env_name and FLAGS.env_name.startswith('antmaze'):
+            if 'antmaze' in env_name and 'large' in env_name and 'antmaze' in env_name:
                 traj_image = d4rl_ant.trajectory_image(viz_env, viz_dataset, trajs)
                 eval_metrics['trajectories'] = wandb.Image(traj_image)
 
-                new_metrics_dist = viz.get_distance_metrics(trajs)
-                eval_metrics.update({
-                    f'debugging/{k}': v for k, v in new_metrics_dist.items()})
+                # new_metrics_dist = viz.get_distance_metrics(trajs)
+                # eval_metrics.update({
+                #     f'debugging/{k}': v for k, v in new_metrics_dist.items()})
 
                 image_v = d4rl_ant.gcvalue_image(
                     viz_env,
                     viz_dataset,
-                    partial(get_v, agent),
+                    functools.partial(get_v, agent),
                 )
                 eval_metrics['v'] = wandb.Image(image_v)
 
             wandb.log(eval_metrics, step=i)
 
 if __name__ == '__main__':
-    app.run(main)
+    main()

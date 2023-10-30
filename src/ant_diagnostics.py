@@ -21,8 +21,7 @@ import os.path as osp
 
 class Visualizer:
     def __init__(self, env_name, viz_env, dataset, discount):
-        data_path = osp.abspath(osp.join(osp.dirname(__file__), f'../antmaze_aux/{env_name}-aux.npz'))
-        print('Attempting to load from: ', data_path)
+        data_path = osp.abspath(osp.join(osp.dirname(__file__), f'../antmaze_aux/{env_name}-aux.npz')) # viz in notebook?
         data = np.load(data_path)
         self.data = {k: data[k] for k in data}
         self.dataset = dataset
@@ -30,35 +29,33 @@ class Visualizer:
         self.K = 6
         masked = (self.data['pV'] == -500).astype(np.int64)
 
-        from numba import jit
-        @jit(nopython=True)
-        def get_bfs(gx, gy):
-            bfs_default = -1
-            bfs = np.full_like(masked, bfs_default)
-            q = [(gx, gy)]
-            i = 0
-            bfs[gx, gy] = 0
-            dirs = [(-1, 0), (1, 0), (0, -1), (0, 1)]
-            while i < len(q):
-                curx, cury = q[i]
-                for dx, dy in dirs:
-                    nx = curx + dx
-                    ny = cury + dy
-                    if masked[nx, ny] == 1 or bfs[nx, ny] != bfs_default:
-                        continue
-                    bfs[nx, ny] = bfs[curx, cury] + 1
-                    q.append((nx, ny))
-                i += 1
-            bfs = np.where(bfs == bfs_default, 500, bfs)
-            bfs = -bfs
-            return bfs
+        # def get_bfs(gx, gy):
+        #     bfs_default = -1
+        #     bfs = np.full_like(masked, bfs_default)
+        #     q = [(gx, gy)]
+        #     i = 0
+        #     bfs[gx, gy] = 0
+        #     dirs = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+        #     while i < len(q):
+        #         curx, cury = q[i]
+        #         for dx, dy in dirs:
+        #             nx = curx + dx
+        #             ny = cury + dy
+        #             if masked[nx, ny] == 1 or bfs[nx, ny] != bfs_default:
+        #                 continue
+        #             bfs[nx, ny] = bfs[curx, cury] + 1
+        #             q.append((nx, ny))
+        #         i += 1
+        #     bfs = np.where(bfs == bfs_default, 500, bfs)
+        #     bfs = -bfs
+        #     return bfs
         
-        goal_bfs = get_bfs(125, 169).astype(np.float32)
+        # goal_bfs = get_bfs(125, 169).astype(np.float32)
 
-        if discount < 1:
-            goal_bfs = -(1 - discount ** (-goal_bfs + 1)) / (1 - discount)
+        # if discount < 1:
+        #     goal_bfs = -(1 - discount ** (-goal_bfs + 1)) / (1 - discount)
 
-        self.data['goal_bfs'] = goal_bfs
+        # self.data['goal_bfs'] = goal_bfs
     
     def get_metrics(self, policy_fn):
         directions = self.get_gradients(policy_fn)

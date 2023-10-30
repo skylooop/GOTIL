@@ -218,6 +218,7 @@ def create_learner(
         lr: float = 3e-4,
         actor_hidden_dims: Sequence[int] = (256, 256),
         value_hidden_dims: Sequence[int] = (256, 256),
+        value_num_layers: int = 3,
         discount: float = 0.99,
         tau: float = 0.005,
         temperature: float = 1,
@@ -236,7 +237,7 @@ def create_learner(
         **kwargs):
 
         print('Extra kwargs:', kwargs)
-
+        value_hidden_dims = (value_hidden_dims, ) * value_num_layers
         rng = jax.random.PRNGKey(seed)
         rng, actor_key, high_actor_key, critic_key, value_key = jax.random.split(rng, 5)
 
@@ -317,17 +318,3 @@ def create_learner(
         ))
 
         return JointTrainAgent(rng, network=network, critic=None, value=None, target_value=None, actor=None, config=config)
-
-
-def get_default_config():
-    config = ml_collections.ConfigDict({
-        'lr': 3e-4,
-        'actor_hidden_dims': (256, 256),
-        'value_hidden_dims': (256, 256),
-        'discount': 0.99,
-        'temperature': 1.0,
-        'tau': 0.005,
-        'pretrain_expectile': 0.85,
-    })
-
-    return config

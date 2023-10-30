@@ -1,0 +1,20 @@
+algo_name: hiql
+
+max_steps: ${pretrain_steps}
+use_layer_norm: 1
+temperature: 1
+high_temperature: 1
+pretrain_expectile: 0.9
+geom_sample: 0.0
+
+value_hidden_dims: 512
+value_num_layers: 3
+use_rep: 1
+rep_dim: 10
+policy_train_rep: 0
+rep_type: concat # ['state', 'diff', 'concat']
+use_waypoints: 1
+
+# for images
+visual: 0
+encoder: impala

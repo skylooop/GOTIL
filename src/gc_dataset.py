@@ -4,11 +4,12 @@ from flax.core import freeze
 import dataclasses
 import numpy as np
 import jax
-import ml_collections
 
 @dataclasses.dataclass
 class GCDataset:
     dataset: Dataset
+    ds_type: str
+    
     p_randomgoal: float
     p_trajgoal: float
     p_currgoal: float
@@ -18,19 +19,7 @@ class GCDataset:
     reward_scale: float = 1.0
     reward_shift: float = -1.0
     terminal: bool = True
-
-    @staticmethod
-    def get_default_config():
-        return ml_collections.ConfigDict({
-            'p_randomgoal': 0.3,
-            'p_trajgoal': 0.5,
-            'p_currgoal': 0.2,
-            'geom_sample': 0,
-            'reward_scale': 1.0,
-            'reward_shift': -1.0,
-            'terminal': True,
-        })
-
+    
     def __post_init__(self):
         self.terminal_locs, = np.nonzero(self.dataset[self.terminal_key] > 0)
         assert np.isclose(self.p_randomgoal + self.p_trajgoal + self.p_currgoal, 1.0)
@@ -44,10 +33,7 @@ class GCDataset:
             p_currgoal = self.p_currgoal
 
         batch_size = len(indx)
-        # Random goals (from whole ds)
         goal_indx = np.random.randint(self.dataset.size, size=batch_size)
-        
-        # Goals from the same trajectory
         final_state_indx = self.terminal_locs[np.searchsorted(self.terminal_locs, indx)]
 
         distance = np.random.rand(batch_size)
@@ -58,8 +44,6 @@ class GCDataset:
             middle_goal_indx = np.round((np.minimum(indx + 1, final_state_indx) * distance + final_state_indx * (1 - distance))).astype(int)
 
         goal_indx = np.where(np.random.rand(batch_size) < p_trajgoal / (1.0 - p_currgoal), middle_goal_indx, goal_indx)
-        
-        # Goals at the current state
         goal_indx = np.where(np.random.rand(batch_size) < p_currgoal, indx, goal_indx)
         return goal_indx
 
@@ -84,19 +68,7 @@ class GCDataset:
 class GCSDataset(GCDataset):
     way_steps: int = None
     high_p_randomgoal: float = 0.
-
-    @staticmethod
-    def get_default_config():
-        return ml_collections.ConfigDict({
-            'p_randomgoal': 0.3,
-            'p_trajgoal': 0.5,
-            'p_currgoal': 0.2,
-            'geom_sample': 0,
-            'reward_scale': 1.0,
-            'reward_shift': 0.0,
-            'terminal': False,
-        })
-
+    
     def sample(self, batch_size: int, indx=None, mode='icvf'):
         if indx is None:
             indx = np.random.randint(self.dataset.size-1, size=batch_size)
@@ -105,7 +77,7 @@ class GCSDataset(GCDataset):
         goal_indx = self.sample_goals(indx)
         
         if mode == "icvf":
-            icvf_desired_goal_indx = self.sample_goals(indx) # s+
+            icvf_desired_goal_indx = self.sample_goals(indx)
 
             icvf_goal_indx = np.where(np.random.rand(batch_size) < 0.5, icvf_desired_goal_indx, goal_indx)
 
@@ -122,7 +94,6 @@ class GCSDataset(GCDataset):
             batch['icvf_desired_masks'] = (1.0 - icvf_desired_success.astype(float)) # reached s+
 
         success = (indx == goal_indx)
-        
         batch['rewards'] = success.astype(float) * self.reward_scale + self.reward_shift
         
         if self.terminal:
@@ -140,7 +111,7 @@ class GCSDataset(GCDataset):
         high_traj_goal_indx = np.round((np.minimum(indx + 1, final_state_indx) * distance + final_state_indx * (1 - distance))).astype(int)
         high_traj_target_indx = np.minimum(indx + self.way_steps, high_traj_goal_indx)
 
-        high_random_goal_indx = np.random.randint(self.dataset.size, size=batch_size) # - final state
+        high_random_goal_indx = np.random.randint(self.dataset.size, size=batch_size)
         high_random_target_indx = np.minimum(indx + self.way_steps, final_state_indx)
 
         pick_random = (np.random.rand(batch_size) < self.high_p_randomgoal)

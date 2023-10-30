@@ -4,7 +4,6 @@ import gym
 import numpy as np
 from collections import defaultdict
 import time
-import os
 
 def supply_rng(f, rng=jax.random.PRNGKey(0)):
     """

@@ -1,10 +1,9 @@
 import d4rl
 import gym
 import numpy as np
-import functools
 
+from typing import *
 from jaxrl_m.dataset import Dataset
-from jaxrl_m.evaluation import EpisodeMonitor
 
 def valid_goal_sampler(self, np_random):
     valid_cells = []
@@ -25,28 +24,23 @@ def valid_goal_sampler(self, np_random):
 
     return xy
 
-def make_env(env_name: str):
-    env = gym.make(env_name)
-    #env.env.env.unwrapped.goal_sampler = functools.partial(valid_goal_sampler, env.env.env.unwrapped) - for random goals
-    env = EpisodeMonitor(env)
-    return env
-
 def compute_mean_std(states: np.ndarray, eps: float):
     mean = states.mean(0)
     std = states.std(0) + eps
     return mean, std
 
-def normalize_states(states, mean, std):
+def normalize(states, mean, std):
     return (states - mean) / std
 
 def get_dataset(env: gym.Env,
-                env_name: str,
+                gcrl: bool = False,
+                dataset=None,
                 clip_to_eps: bool = True,
                 eps: float = 1e-5,
-                dataset=None,
                 filter_terminals=False,
                 obs_dtype=np.float32,
-                normalize_states=False
+                normalize_states=False,
+                normalize_rewards=False
                 ):
         if dataset is None:
             dataset = d4rl.qlearning_dataset(env)
@@ -57,7 +51,6 @@ def get_dataset(env: gym.Env,
 
         dataset['terminals'][-1] = 1
         if filter_terminals:
-            # drop terminal transitions
             non_last_idx = np.nonzero(~dataset['terminals'])[0]
             last_idx = np.nonzero(dataset['terminals'])[0]
             penult_idx = last_idx - 1
@@ -68,9 +61,8 @@ def get_dataset(env: gym.Env,
                 new_dataset[k] = v[non_last_idx]
             dataset = new_dataset
 
-        if 'antmaze' in env_name:
-            # antmaze: terminals are incorrect for GCRL
-            dones_float = np.zeros_like(dataset['rewards']) # (ds_size, 1), no trajectories, only states
+        if 'antmaze' in env.spec.id.lower() and gcrl:
+            dones_float = np.zeros_like(dataset['rewards'])
             dataset['terminals'][:] = 0.
 
             for i in range(len(dones_float) - 1):
@@ -85,28 +77,41 @@ def get_dataset(env: gym.Env,
         observations = dataset['observations'].astype(obs_dtype)
         next_observations = dataset['next_observations'].astype(obs_dtype)
 
-        
         if normalize_states:
             state_mean, state_std = compute_mean_std(dataset["observations"], eps=1e-3)
-            print(f"Dataset Mean: {state_mean}, STD: {state_std}")
-            observations = normalize_states(dataset["observations"], state_mean, state_std)
-            next_observations = normalize_states(dataset["next_observations"], state_mean, state_std)
+            observations = normalize(dataset["observations"], state_mean, state_std)
+            next_observations = normalize(dataset["next_observations"], state_mean, state_std)
         
+        if normalize_rewards:
+            dataset = modify_reward(dataset, env_name=env.spec.id)
+            print(f"Rewards mean: {dataset['rewards'].mean()}")
+            
         return Dataset.create(
             observations=observations,
+            next_observations=next_observations,
             actions=dataset['actions'].astype(np.float32),
             rewards=dataset['rewards'].astype(np.float32),
             masks=1.0 - dones_float.astype(np.float32),
             dones_float=dones_float.astype(np.float32),
-            next_observations=next_observations,
         )
 
+def modify_reward(
+    dataset: Dict[str, np.ndarray], env_name: str, max_episode_steps: int = 1000
+):
+    if any(s in env_name.lower() for s in ("halfcheetah", "hopper", "walker2d")):
+        min_ret, max_ret = get_normalization(dataset, max_episode_steps)
+        dataset["rewards"] /= max_ret - min_ret
+        dataset["rewards"] *= max_episode_steps
+    elif "antmaze" in env_name:
+        dataset["rewards"] -= 1.0
+    return dataset
+
 def get_normalization(dataset):
-        returns = []
-        ret = 0
-        for r, term in zip(dataset['rewards'], dataset['dones_float']):
-            ret += r
-            if term:
-                returns.append(ret)
-                ret = 0
-        return (max(returns) - min(returns)) / 1000
+    returns = []
+    ret = 0
+    for r, term in zip(dataset['rewards'], dataset['dones_float']):
+        ret += r
+        if term:
+            returns.append(ret)
+            ret = 0
+    return (max(returns) - min(returns)) / 1000

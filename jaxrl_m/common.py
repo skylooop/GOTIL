@@ -76,7 +76,7 @@ class TrainState(flax.struct.PyTreeNode):
         **kwargs,
     ) -> "TrainState":
         if tx is not None:
-            opt_state = tx.init(params)
+            opt_state = tx.init(flax.core.freeze(params))
         else:
             opt_state = None
 

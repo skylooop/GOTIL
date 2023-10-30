@@ -11,7 +11,6 @@ from jaxrl_m.eqx_common import TargetTrainState
 from typing import * 
 import ml_collections
 
-@jax.jit
 def expectile_loss(adv, diff, expectile):
     weight = jnp.where(adv >= 0, expectile, (1 - expectile))
     return weight * diff ** 2
