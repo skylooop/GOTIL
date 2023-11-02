@@ -1,1 +1,4 @@
 algo_name: icvf
+
+hidden_dims: [256, 256]
+expectile: 0.9

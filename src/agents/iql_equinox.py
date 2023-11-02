@@ -55,6 +55,7 @@ class TrainConfig:
     # path for checkpoints saving, optional
     checkpoints_path: Optional[str] = None
     actor_schedule: str = "none"
+    use_icvf_pretrain: bool = False
     # training random seed
     seed: int = 42
 
@@ -262,12 +263,27 @@ def eval_ensemble(ensemble, state, action):
 class VNet(eqx.Module):
     hidden_dims: tuple[int] = (256, 256)
     net: eqx.Module
+    icvf_weights: Any = None
     
-    def __init__(self, key, state_dim):
+    def __init__(self, key, state_dim, use_icvf: bool = False):
         key, mlp_key = jax.random.split(key, 2)
-        self.net = eqx.nn.MLP(in_size=state_dim, 
+        net = eqx.nn.MLP(in_size=state_dim, 
                               out_size=1, depth=len(self.hidden_dims), width_size=self.hidden_dims[-1],
                               key=mlp_key)
+        if use_icvf:
+            print("Loading Pretrained ICVF")
+            icvf_net = eqx.nn.MLP(in_size=state_dim, 
+                              out_size=self.hidden_dims[-1], depth=len(self.hidden_dims), width_size=self.hidden_dims[-1],
+                              key=mlp_key)
+            loaded_net = eqx.tree_deserialise_leaves("/home/m_bobrin/GOTIL/src/agents/icvf_model.eqx", icvf_net)
+            net = eqx.tree_at(lambda mlp: mlp.layers[-1], loaded_net, net.layers[-1])
+            # for loss
+            is_linear = lambda x: isinstance(x, eqx.nn.Linear)
+            get_weights = lambda m: [x.weight
+                                    for x in jax.tree_util.tree_leaves(m, is_leaf=is_linear)
+                                    if is_linear(x)]
+            self.icvf_weights = get_weights(net)[:-1]
+        self.net = net
     
     def __call__(self, obs):
         return self.net(obs)
@@ -311,15 +327,27 @@ class IQLagent(eqx.Module):
     @eqx.filter_jit
     def eval_actor(self, key, obs):
         return jnp.clip(self.actor_learner.model(obs).sample(seed=key), -1.0, 1.0)
-    
+
+is_linear = lambda x: isinstance(x, eqx.nn.Linear)
+get_weights = lambda m: [x.weight
+                         for x in jax.tree_util.tree_leaves(m, is_leaf=is_linear)
+                         if is_linear(x)]
+
 @eqx.filter_jit
 def update_agent(agent, batch, buffer_key):
+    def l2_norm(model):
+        total = 0
+        curr_weights = get_weights(model)[:-1]
+        for idx, w in enumerate(curr_weights):
+            total = total + jnp.sum(w ** 2 - agent.v_learner.model.icvf_weights[idx] ** 2)
+        return total
+    
     def v_loss_fn(v_net, q_learner):
         q1, q2 = eval_ensemble(q_learner, batch['observations'], batch['actions'])
         q = jnp.minimum(q1, q2)
         
         v = eqx.filter_vmap(v_net)(batch['observations'])
-        value_loss = expectile_loss(q - v, expectile=agent.expectile).mean()
+        value_loss = expectile_loss(q - v, expectile=agent.expectile).mean()# + 100.0 * l2_norm(v_net)
         advantage = q - v
         return value_loss, {
             'value_loss': value_loss,
@@ -399,9 +427,10 @@ def train(config: TrainConfig):
         optim=optax.adam(learning_rate=config.qf_lr)
     )
     v_learner = TrainState.create(
-        model=VNet(key=val_key_main_model, state_dim=state_dim),
+        model=VNet(key=val_key_main_model, state_dim=state_dim, use_icvf=config.use_icvf_pretrain),
         optim=optax.adam(learning_rate=config.vf_lr)
     )
+    
     actor_learner = TrainState.create(
         model=GaussianPolicy(key=actor_key,
                              state_dim=state_dim,
@@ -430,6 +459,7 @@ def train(config: TrainConfig):
                        "Normalized D4RL return": norm_returns.mean()})
 
 def evaluate_d4rl(env: gym.Env, actor: IQLagent, num_episodes: int, seed: int):
+    env.seed(seed)
     print("Evaluating Agent")
 
     key = jax.random.PRNGKey(seed)

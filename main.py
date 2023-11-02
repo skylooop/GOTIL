@@ -6,13 +6,14 @@ import pickle
 import rootutils
 import functools
 import gzip
+
 os.environ["HYDRA_FULL_ERROR"] = "1"
 os.environ["D4RL_SUPPRESS_IMPORT_ERROR"] = "1"
 warnings.filterwarnings("ignore")
 
 # Configs & Printing
 import wandb
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 ROOT = rootutils.setup_root(search_from=__file__, indicator=[".git", "pyproject.toml"],
                             pythonpath=True, cwd=True)
 
@@ -24,7 +25,9 @@ import equinox as eqx
 from tqdm.auto import tqdm
 from jaxrl_m.wandb import setup_wandb
 
-from src.agents import hiql, icvf
+from utils.rich_utils import print_config_tree
+from src.agents import hiql, icvf, gotil
+from src.agents.icvf import update, eval_ensemble
 from src.gc_dataset import GCSDataset
 from src.utils import record_video
 from src import d4rl_utils, d4rl_ant, ant_diagnostics, viz_utils
@@ -48,35 +51,6 @@ def get_debug_statistics_hiql(agent, batch):
 
     return stats
 
-@eqx.filter_jit
-def get_debug_statistics_icvf(agent, batch):
-    def get_info(s, s_plus, intent):
-        return agent.evaluate_ensemble(agent.value.model, s, s_plus, intent)
-
-    s = batch['observations']
-    s_plus = batch['icvf_goals']
-    intent = batch['icvf_desired_goals']
-    info1, info2 = get_info(s, s_plus, intent)
-    v_s1, v_s2 = get_info(s, intent, intent)
-    
-    stats = {}
-    stats.update({
-        'ICVF': (info1 + info2).mean(),
-        'V_function': (v_s1 + v_s2).mean()
-    })
-
-    return stats
-
-@eqx.filter_jit
-def get_gcvalue_icvf(agent, s, g, z):
-    v1, v2 = agent.evaluate_ensemble(agent.value.model, s, g, z)
-    return (v1 + v2) / 2.
-
-def get_v_zz(agent, goal, observations):
-    goal = jnp.tile(goal, (observations.shape[0], 1))
-    return get_gcvalue_icvf(agent, observations, goal, goal)
-
-
 @jax.jit
 def get_gcvalue(agent, s, g):
     v1, v2 = agent.network(s, g, method='value')
@@ -87,11 +61,53 @@ def get_v(agent, goal, observations):
     return get_gcvalue(agent, observations, goal)
 
 @eqx.filter_jit
-def get_traj_icvf(agent, trajectory):
-    def get_v(s, intent):
-        v1, v2 = agent.evaluate_ensemble(agent.value.model, s[None], intent[None], intent[None])
-        return (v1 + v2) / 2.
-    
+def get_debug_statistics_icvf(agent, batch):
+    def get_info(s, g, z):
+        if agent.config['no_intent']:
+            return agent.value(s, g, jnp.ones_like(z), method='get_info')
+        else:
+            return eval_ensemble(agent.value_learner.model, s, g, z)
+    s = batch['observations']
+    g = batch['icvf_goals']
+    z = batch['icvf_desired_goals']
+
+    info_ssz = get_info(s, s, z)
+    info_szz = get_info(s, z, z)
+    info_sgz = get_info(s, g, z)
+    info_sgg = get_info(s, g, g)
+    info_szg = get_info(s, z, g)
+
+    if 'phi' in info_sgz:
+        stats = {
+            'phi_norm': jnp.linalg.norm(info_sgz['phi'], axis=-1).mean(),
+            'psi_norm': jnp.linalg.norm(info_sgz['psi'], axis=-1).mean(),
+        }
+    else:
+        stats = {}
+
+    stats.update({
+        'v_ssz': info_ssz.mean(),
+        'v_szz': info_szz.mean(),
+        'v_sgz': info_sgz.mean(),
+        'v_sgg': info_sgg.mean(),
+        'v_szg': info_szg.mean(),
+        'diff_szz_szg': (info_szz - info_szg).mean(),
+        'diff_sgg_sgz': (info_sgg - info_sgz).mean(),
+        # 'v_ssz': info_ssz['v'].mean(),
+        # 'v_szz': info_szz['v'].mean(),
+        # 'v_sgz': info_sgz['v'].mean(),
+        # 'v_sgg': info_sgg['v'].mean(),
+        # 'v_szg': info_szg['v'].mean(),
+        # 'diff_szz_szg': (info_szz['v'] - info_szg['v']).mean(),
+        # 'diff_sgg_sgz': (info_sgg['v'] - info_sgz['v']).mean(),
+    })
+    return stats
+
+@jax.jit
+def get_traj_v(agent, trajectory):
+    def get_v(s, g):
+        v1, v2 = agent.network(s[None], g[None], method='value')
+        return (v1 + v2) / 2
     observations = trajectory['observations']
     all_values = jax.vmap(jax.vmap(get_v, in_axes=(None, 0)), in_axes=(0, None))(observations, observations)
     return {
@@ -100,28 +116,13 @@ def get_traj_icvf(agent, trajectory):
         'dist_to_middle': all_values[:, all_values.shape[1] // 2],
     }
 
-@jax.jit
-def get_traj_v(agent, trajectory):
-    def get_v(s, g):
-        v1, v2 = agent.network(s[None], g[None], method='value')
-        return (v1 + v2) / 2
-    observations = trajectory['observations']
-    all_values = jax.vmap(jax.vmap(get_v, in_axes=(None, 0)), in_axes=(0, None))(observations, observations) # 50x50x1
-    return {
-        'dist_to_beginning': all_values[:, 0],
-        'dist_to_end': all_values[:, -1],
-        'dist_to_middle': all_values[:, all_values.shape[1] // 2],
-    }
-
 @hydra.main(version_base="1.4", config_path=str(ROOT/"configs"), config_name="base.yaml")
 def main(config: DictConfig):
-    print(OmegaConf.to_yaml(config))
+    print_config_tree(config)
     setup_wandb(hyperparam_dict=dict(config),
-                      entity=None,
                       project=config.logger.project,
                       group=config.logger.group,
-                      name=config.Env.dataset_id + "testv3")
-    
+                      name="Umaze-diverse-v2_HIQL")
     goal_info = None
     discrete = False
     if 'antmaze' in config.Env.dataset_id.lower():
@@ -268,7 +269,12 @@ def main(config: DictConfig):
 
     env.reset()
     if config.GoalDS:
-        gc_dataset = GCSDataset(dataset, **dict(config.GoalDS), discount=config.Env.discount)
+        gc_dataset = GCSDataset(dataset, **dict(config.GoalDS),
+                                discount=config.Env.discount)
+        if config.algo.algo_name == "icvf":
+            from src.icvf_utils import DebugPlotGenerator
+            visualizer = DebugPlotGenerator(env_name, gc_dataset)
+            
         if 'antmaze' in env_name:
             example_trajectory = gc_dataset.sample(50, indx=np.arange(1000, 1050))
         elif 'kitchen' in env_name:
@@ -281,7 +287,8 @@ def main(config: DictConfig):
             example_trajectory = gc_dataset.sample(50, indx=np.arange(5000, 5050))
         else:
             pass
-            #TODO
+            #TODO: Add new environments
+            
     total_steps = config.pretrain_steps 
     example_batch = dataset.sample(1)
 
@@ -291,86 +298,68 @@ def main(config: DictConfig):
                                     actions=example_batch['actions'] if not discrete else example_action,
                                     discrete=discrete,
                                     **dict(config.algo))
-    elif config.algo.algo_name == "icvf":
-        agent = icvf.create_learner(config.seed,
-                                    example_batch['observations'],)
-                                    # num_ensemble_vals = 2,
-                                    # use_layer_norm=bool(FLAGS.use_layer_norm))
-         
-    # elif FLAGS.algo_name == "cilot":
-    #     pretrain_offline_dataset = GCSDataset(offline_dataset, **FLAGS.gcdataset.to_dict())
-    #     joint_icvf = cilot.create_joint_learner(FLAGS.seed,
-    #                                 offline_ds_obs=offline_dataset['observations'],
-    #                                 expert_ds_obs=example_batch['observations'], #from d4rl
-    #                                 encoder=None,
-    #                                 intention_book="uniform")
         
-    for i in tqdm(range(1, total_steps + 1),
-                       smoothing=0.1,
-                       dynamic_ncols=True):
+    elif config.algo.algo_name == "icvf":
+        agent = icvf.create_eqx_learner(config.seed,
+                                       example_batch['observations'],
+                                       discount=config.Env.discount,
+                                       **dict(config.algo))
+        
+    elif config.algo.algo_name == "gotil":
+        from src.generate_antmaze_random import obtain_agent_ds
+        agent_dataset = obtain_agent_ds()
+        expert_icvf = icvf.create_eqx_learner(config.seed,
+                                       observations=example_batch['observations'],
+                                       discount=config.Env.discount,
+                                       **dict(config.algo))
+        agent_icvf = icvf.create_eqx_learner(config.seed,
+                                       observations=example_batch['observations'], # TODO: Replace with random actions from SMODICE
+                                       discount=config.Env.discount,
+                                       **dict(config.algo))
+        
+        agent = gotil.create_eqx_learner(config.seed,
+                                        expert_icvf=expert_icvf,
+                                        agent_icvf=agent_icvf)
+        
+    for i in tqdm(range(1, total_steps + 1), smoothing=0.1, dynamic_ncols=True, desc="Training"):
         if config.GoalDS:
-            pretrain_batch = gc_dataset.sample(config.batch_size)
+            pretrain_batch = gc_dataset.sample(config.batch_size, mode=config.algo.algo_name)
         else:
             pretrain_batch = dataset.sample(config.batch_size)
             
-        # if config.algo_name == "cilot":
-        #     if i < total_steps / 2:
-        #         agent, update_info = joint_icvf.pretrain_expert(pretrain_batch)
-        #     else:
-        #         agent_batch_data = pretrain_offline_dataset.sample(FLAGS.batch_size)
-        #         agent, update_info = joint_icvf.pretrain_agent(agent_batch_data)
-
-        #else:
-        agent, update_info = supply_rng(agent.pretrain_update, rng=jax.random.PRNGKey(config.seed))(pretrain_batch)
+        if config.algo.algo_name == "gotil":
+            if i < total_steps / 2:
+                agent, update_info = agent.pretrain_expert(pretrain_batch)
+            else:
+                
+                agent, update_info = agent.pretrain_agent(agent_batch_data)
+                
+        elif config.algo.algo_name == "hiql":
+            agent, update_info = supply_rng(agent.pretrain_update)(pretrain_batch)
+        else:
+            agent, update_info = update(agent, pretrain_batch)
             
         if i % config.log_interval == 0 and config.algo.algo_name == "hiql":
             debug_statistics = get_debug_statistics_hiql(agent, pretrain_batch)
             train_metrics = {f'training/{k}': v for k, v in update_info.items()}
             train_metrics.update({f'training_stats/{k}': v for k, v in debug_statistics.items()})
             wandb.log(train_metrics, step=i)
-
-        # elif i % FLAGS.log_interval == 0 and FLAGS.algo_name == "cilot":
-        #     if agent.cur_processor == "expert":
-        #         # codebook - embedding (instead of z) 
-        #         # try first psi(intent) = z - vector for OT
-        #         name = "expert"
-        #         agent = agent.expert_icvf
-        #     else:
-        #         # V(s, z)
-        #         # policy - outputs z and action
-        #         name = "agent"
-        #         agent = agent.agent_icvf
+            
+        if i % config.log_interval == 0 and config.algo.algo_name == "icvf":
+            debug_statistics = get_debug_statistics_icvf(agent, pretrain_batch)
+            train_metrics = {f'training/{k}': v for k, v in update_info.items()}
+            train_metrics.update({f'pretraining/debug/{k}': v for k, v in debug_statistics.items()})
+            wandb.log(train_metrics, step=i)
+            
+        if i % config.save_interval == 0 and config.algo.algo_name == "icvf":
+            unensemble_model = jax.tree_util.tree_map(lambda x: x[0] if eqx.is_array(x) else x, agent.value_learner.model)
+            with open("icvf_model.eqx", "wb") as f:
+                eqx.tree_serialise_leaves(f, unensemble_model.phi_net)
                 
-            # debug_statistics = get_debug_statistics_icvf(agent, pretrain_batch)
-            # train_metrics = {f'training/{name}/{k}': v for k, v in update_info.items()}
-            # train_metrics.update({f'training_stats/{name}/{k}': v for k, v in debug_statistics.items()})
-            # wandb.log(train_metrics, step=i)
-            
-        # if i % FLAGS.log_interval == 0 and FLAGS.algo_name == "icvf":
-        #     train_metrics = {f'training/{k}': v for k, v in update_info.items()}
-        #     wandb.log(train_metrics, step=i)
-            
-        #     eval_metrics = {}
-            
-        #     traj_metrics = get_traj_icvf(agent, example_trajectory)
-        #     value_viz = viz_utils.make_visual_no_image(
-        #         traj_metrics,
-        #         [functools.partial(viz_utils.visualize_metric, metric_name=k) for k in traj_metrics.keys()]
-        #     )
-        #     eval_metrics['value_traj_viz'] = wandb.Image(value_viz)
-        #     image_v = d4rl_ant.gcvalue_image(
-        #             viz_env,
-        #             viz_dataset,
-        #             functools.partial(get_v_zz, agent),
-        #         )
-        #     image_icvf = d4rl_ant.gcicvf_image(
-        #             viz_env,
-        #             viz_dataset,
-        #             functools.partial(get_gcvalue_icvf, agent)
-        #         )
-        #     eval_metrics['ICVF function'] = wandb.Image(image_icvf)
-        #     eval_metrics['V function'] = wandb.Image(image_v)
-        #     wandb.log(eval_metrics, step=i)
+        if i % config.eval_interval == 0 and config.algo.algo_name == "icvf":
+            visualizations = visualizer.generate_debug_plots(agent)
+            eval_metrics = {f'visualizations/{k}': v for k, v in visualizations.items()}
+            wandb.log(eval_metrics, step=i)
             
         if i % config.eval_interval == 0 and config.algo.algo_name == "hiql":
             policy_fn = functools.partial(supply_rng(agent.sample_actions), discrete=discrete)
@@ -424,11 +413,7 @@ def main(config: DictConfig):
             if 'antmaze' in env_name and 'large' in env_name and 'antmaze' in env_name:
                 traj_image = d4rl_ant.trajectory_image(viz_env, viz_dataset, trajs)
                 eval_metrics['trajectories'] = wandb.Image(traj_image)
-
-                # new_metrics_dist = viz.get_distance_metrics(trajs)
-                # eval_metrics.update({
-                #     f'debugging/{k}': v for k, v in new_metrics_dist.items()})
-
+                
                 image_v = d4rl_ant.gcvalue_image(
                     viz_env,
                     viz_dataset,

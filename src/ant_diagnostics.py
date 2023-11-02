@@ -27,7 +27,10 @@ class Visualizer:
         self.dataset = dataset
         self.viz_env = viz_env
         self.K = 6
-        masked = (self.data['pV'] == -500).astype(np.int64)
+        
+        intent_set_indx = np.array([184588, 62200, 162996, 110214, 4086, 191369, 92549, 12946, 192021])
+        self.intent_set_batch = dataset.sample(9, indx=intent_set_indx)
+        #masked = (self.data['pV'] == -500).astype(np.int64)
 
         # def get_bfs(gx, gy):
         #     bfs_default = -1
@@ -70,10 +73,6 @@ class Visualizer:
             'masked_pct_aligned': np.mean((goods > 0) * masks) / np.mean(masks),
         }
         
-    def icvf_generate_debug_plots(self, agent, example_trajectory):
-        pass
-    
-    
     def is_goods(self, directions):
         X, Y = self.data['X'][::self.K], self.data['Y'][::self.K]
         directions = directions.reshape((len(Y), len(X), 2))

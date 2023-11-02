@@ -68,35 +68,33 @@ def save_video(save_dir, file_name, frames, episode_id=0):
         img = Image.fromarray(np.flipud(frames[i]), 'RGB')
         img.save(os.path.join(filename, 'frame_{}.png'.format(i)))
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--noisy', action='store_true', help='Noisy actions')
-    parser.add_argument('--maze', type=str, default='large', help='Maze type. umaze, medium, or large')
-    parser.add_argument('--num_samples', type=int, default=int(1e6), help='Num samples to collect')
-    parser.add_argument('--env', type=str, default='ant', help='Environment type')
-    parser.add_argument('--policy_file', type=str, default='policy_file', help='file_name')
-    parser.add_argument('--max_episode_steps', default=1000, type=int)
-    parser.add_argument('--video', action='store_true')
-    parser.add_argument('--multi_start', action='store_true')
-    parser.add_argument('--multigoal', action='store_true')
-    args = parser.parse_args()
-
-    if args.maze == 'umaze':
+def obtain_agent_ds(
+    noisy: bool = True,
+    maze: str = "large",
+    num_samples: int = int(1e6),
+    env: str = "ant",
+    max_episode_steps: int = 1_000,
+    policy_file: str = "",
+    video: bool = False,
+    multi_start: bool = False,
+    multigoal: bool = False
+):
+    if maze == 'umaze':
         maze = maze_env.U_MAZE
-    elif args.maze == 'medium':
+    elif maze == 'medium':
         maze = maze_env.BIG_MAZE
-    elif args.maze == 'large':
+    elif maze == 'large':
         maze = maze_env.HARDEST_MAZE
-    elif args.maze == 'umaze_eval':
+    elif maze == 'umaze_eval':
         maze = maze_env.U_MAZE_EVAL
-    elif args.maze == 'medium_eval':
+    elif maze == 'medium_eval':
         maze = maze_env.BIG_MAZE_EVAL
-    elif args.maze == 'large_eval':
+    elif maze == 'large_eval':
         maze = maze_env.HARDEST_MAZE_EVAL
     else:
         raise NotImplementedError
     
-    env = NormalizedBoxEnv(ant.AntMazeEnv(maze_map=maze, maze_size_scaling=4.0, non_zero_reset=args.multi_start))
+    env = NormalizedBoxEnv(ant.AntMazeEnv(maze_map=maze, maze_size_scaling=4.0, non_zero_reset=multi_start))
     
     env.set_target()
     s = env.reset()
@@ -107,19 +105,18 @@ def main():
     
     ts = 0
     num_episodes = 0
-    for _ in range(args.num_samples):
+    for _ in range(num_samples):
         act = env.action_space.sample()
 
-        if args.noisy:
+        if noisy:
             act = act + np.random.randn(*act.shape)*0.2
             act = np.clip(act, -1.0, 1.0)
 
         ns, r, done, info = env.step(act)
         timeout = False
-        if ts >= args.max_episode_steps:
+        if ts >= max_episode_steps:
             timeout = True
             #done = True
-        
         append_data(data, s[:-2], act, r, env.target_goal, done, timeout, env.physics.data)
 
         if len(data['observations']) % 10000 == 0:
@@ -142,7 +139,7 @@ def main():
     npify(data)
     for k in data:
         dataset.create_dataset(k, data=data[k], compression='gzip')
-
+    return dataset
 
 if __name__ == '__main__':
-    main()
+    obtain_agent_ds()

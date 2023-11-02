@@ -12,7 +12,6 @@ from jaxrl_m.networks import Policy, Critic, ensemblize, DiscretePolicy
 import flax
 import flax.linen as nn
 from flax.core import freeze, unfreeze
-import ml_collections
 from . import iql
 from src.special_networks import Representation, HierarchicalActorCritic, RelativeRepresentation, MonolithicVF
 
@@ -218,7 +217,6 @@ def create_learner(
         lr: float = 3e-4,
         actor_hidden_dims: Sequence[int] = (256, 256),
         value_hidden_dims: Sequence[int] = (256, 256),
-        value_num_layers: int = 3,
         discount: float = 0.99,
         tau: float = 0.005,
         temperature: float = 1,
@@ -237,7 +235,7 @@ def create_learner(
         **kwargs):
 
         print('Extra kwargs:', kwargs)
-        value_hidden_dims = (value_hidden_dims, ) * value_num_layers
+        
         rng = jax.random.PRNGKey(seed)
         rng, actor_key, high_actor_key, critic_key, value_key = jax.random.split(rng, 5)
 

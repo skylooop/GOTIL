@@ -41,7 +41,7 @@ class GCDataset:
             us = np.random.rand(batch_size)
             middle_goal_indx = np.minimum(indx + np.ceil(np.log(1 - us) / np.log(self.discount)).astype(int), final_state_indx)
         else:
-            middle_goal_indx = np.round((np.minimum(indx + 1, final_state_indx) * distance + final_state_indx * (1 - distance))).astype(int)
+            middle_goal_indx = np.round((indx * distance + final_state_indx * (1 - distance))).astype(int)
 
         goal_indx = np.where(np.random.rand(batch_size) < p_trajgoal / (1.0 - p_currgoal), middle_goal_indx, goal_indx)
         goal_indx = np.where(np.random.rand(batch_size) < p_currgoal, indx, goal_indx)
@@ -78,20 +78,22 @@ class GCSDataset(GCDataset):
         
         if mode == "icvf":
             icvf_desired_goal_indx = self.sample_goals(indx)
-
-            icvf_goal_indx = np.where(np.random.rand(batch_size) < 0.5, icvf_desired_goal_indx, goal_indx)
-
-            icvf_success = (indx == icvf_goal_indx) # goal
-            icvf_desired_success = (indx == icvf_desired_goal_indx) # final state, s+
+            icvf_goal_indx = np.where(np.random.rand(batch_size) < self.p_randomgoal, icvf_desired_goal_indx, goal_indx)
             
-            batch['icvf_rewards'] = icvf_success.astype(float) * self.reward_scale + self.reward_shift # reached goal (not s+!)
+            batch['icvf_goals'] = jax.tree_map(lambda arr: arr[icvf_goal_indx], self.dataset['observations'])
+            batch['icvf_desired_goals'] = jax.tree_map(lambda arr: arr[icvf_desired_goal_indx], self.dataset['observations'])
+            
+            icvf_success = (indx == icvf_goal_indx)
+            icvf_desired_success = (indx == icvf_desired_goal_indx)
+            
+            batch['icvf_rewards'] = icvf_success.astype(float) * self.reward_scale + self.reward_shift
             batch['icvf_desired_rewards'] = icvf_desired_success.astype(float) * self.reward_scale + self.reward_shift
             
             batch['icvf_goals'] = jax.tree_map(lambda arr: arr[icvf_goal_indx], self.dataset['observations'])
             batch['icvf_desired_goals'] = jax.tree_map(lambda arr: arr[icvf_desired_goal_indx], self.dataset['observations'])
             
-            batch['icvf_masks'] = (1.0 - icvf_success.astype(float)) # reached goal
-            batch['icvf_desired_masks'] = (1.0 - icvf_desired_success.astype(float)) # reached s+
+            batch['icvf_masks'] = (1.0 - icvf_success.astype(float))
+            batch['icvf_desired_masks'] = (1.0 - icvf_desired_success.astype(float))
 
         success = (indx == goal_indx)
         batch['rewards'] = success.astype(float) * self.reward_scale + self.reward_shift
@@ -122,7 +124,6 @@ class GCSDataset(GCDataset):
         batch['high_targets'] = jax.tree_map(lambda arr: arr[high_target_idx], self.dataset['observations'])
 
         if isinstance(batch['goals'], FrozenDict):
-            # Freeze the other observations
             batch['observations'] = freeze(batch['observations'])
             batch['next_observations'] = freeze(batch['next_observations'])
 

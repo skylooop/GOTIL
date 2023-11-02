@@ -2,16 +2,16 @@
 
 defaults:
   - _self_
-  - GoalDS: gcds.yaml #null
-  - Env: antmaze-large-diverse.yaml
-  - algo: hiql.yaml
-  - logger: wandb.yaml
+  - GoalDS: gcds #null
+  - Env: antmaze-umaze-diverse
+  - algo: hiql
+  - logger: wandb
 
 seed: 42
 num_video_episodes: 2
 log_interval: 1_000
-eval_interval: 500
+eval_interval: 10_000
 eval_episodes: 2
-save_interval: 100_000
+save_interval: 250_000
 batch_size: 1024
-pretrain_steps: 1_000_000
+pretrain_steps: 1_000_002
