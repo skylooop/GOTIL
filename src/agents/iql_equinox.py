@@ -282,7 +282,7 @@ class VNet(eqx.Module):
             get_weights = lambda m: [x.weight
                                     for x in jax.tree_util.tree_leaves(m, is_leaf=is_linear)
                                     if is_linear(x)]
-            self.icvf_weights = get_weights(net)[:-1]
+            self.icvf_weights = get_weights(net)[:-1] # only first two layers are pretrained by icvf
         self.net = net
     
     def __call__(self, obs):

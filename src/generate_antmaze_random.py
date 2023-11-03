@@ -31,6 +31,7 @@ def get_dataset(h5path):
 
 def reset_data():
     return {'observations': [],
+            'next_observations': [],
             'actions': [],
             'terminals': [],
             'timeouts': [],
@@ -40,8 +41,9 @@ def reset_data():
             'infos/qvel': [],
             }
 
-def append_data(data, s, a, r, tgt, done, timeout, env_data):
+def append_data(data, s, next_s, a, r, tgt, done, timeout, env_data):
     data['observations'].append(s)
+    data['next_observations'].append(next_s)
     data['actions'].append(a)
     data['rewards'].append(r)
     data['terminals'].append(done)
@@ -68,14 +70,37 @@ def save_video(save_dir, file_name, frames, episode_id=0):
         img = Image.fromarray(np.flipud(frames[i]), 'RGB')
         img.save(os.path.join(filename, 'frame_{}.png'.format(i)))
 
+def get_dataset(h5path):
+    data_dict = {}
+    with h5py.File(h5path, 'r') as dataset_file:
+        for k in tqdm(get_keys(dataset_file), desc="load datafile"):
+            try:  # first try loading as an array
+                data_dict[k] = dataset_file[k][:]
+            except ValueError as e:  # try loading as a scalar
+                data_dict[k] = dataset_file[k][()]
+
+    return data_dict
+
+def combine_ds(num_expert_trajs, num_agent_trajs, expert_ds, agent_ds):
+    #dict_keys(['observations', 'actions', 'next_observations', 'rewards', 'terminals'])
+    # maybe use other approach as in https://github.com/JasonMa2016/SMODICE/blob/main/utils.py#L110
+    mixed_ds = {
+        'observations': np.concatenate((agent_ds['observations'][:num_agent_trajs], expert_ds['observations'][:num_expert_trajs]), dtype=np.float32),
+        'next_observations': np.concatenate((agent_ds['next_observations'][:num_agent_trajs], expert_ds['next_observations'][:num_expert_trajs]), dtype=np.float32),
+        'rewards': np.concatenate((agent_ds['rewards'][:num_agent_trajs], expert_ds['rewards'][:num_expert_trajs]), dtype=np.float32),
+        'actions': np.concatenate((agent_ds['actions'][:num_agent_trajs], expert_ds['actions'][:num_expert_trajs]), dtype=np.float32),
+        'terminals': np.concatenate((agent_ds['terminals'][:num_agent_trajs], expert_ds['terminals'][:num_expert_trajs]), dtype=np.float32),
+    }
+    return mixed_ds
+
+
 def obtain_agent_ds(
     noisy: bool = True,
-    maze: str = "large",
-    num_samples: int = int(1e6),
+    maze: str = "umaze",
+    num_samples: int = int(300_000),
     env: str = "ant",
     max_episode_steps: int = 1_000,
     policy_file: str = "",
-    video: bool = False,
     multi_start: bool = False,
     multigoal: bool = False
 ):
@@ -94,7 +119,7 @@ def obtain_agent_ds(
     else:
         raise NotImplementedError
     
-    env = NormalizedBoxEnv(ant.AntMazeEnv(maze_map=maze, maze_size_scaling=4.0, non_zero_reset=multi_start))
+    env = NormalizedBoxEnv(ant.AntMazeEnv(maze_map=maze, reward_type="sparse", maze_size_scaling=4.0, non_zero_reset=multi_start))
     
     env.set_target()
     s = env.reset()
@@ -117,7 +142,7 @@ def obtain_agent_ds(
         if ts >= max_episode_steps:
             timeout = True
             #done = True
-        append_data(data, s[:-2], act, r, env.target_goal, done, timeout, env.physics.data)
+        append_data(data, s[:-2], ns[:-2], act, r, env.target_goal, done, timeout, env.physics.data)
 
         if len(data['observations']) % 10000 == 0:
             print(len(data['observations']))
@@ -130,16 +155,15 @@ def obtain_agent_ds(
             s = env.reset()
             env.set_target_goal()
             num_episodes += 1
-            frames = []
         else:
             s = ns
     
-    fname = 'antmaze_demos/antmaze-umaze-v2-randomstart-noiserandomaction.hdf5'
+    fname = 'antmaze-umaze-v2-randomstart-noiserandomaction.hdf5'
     dataset = h5py.File(fname, 'w')
     npify(data)
     for k in data:
         dataset.create_dataset(k, data=data[k], compression='gzip')
-    return dataset
+    return get_dataset(fname)
 
 if __name__ == '__main__':
     obtain_agent_ds()

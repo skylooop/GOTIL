@@ -122,7 +122,7 @@ def main(config: DictConfig):
     setup_wandb(hyperparam_dict=dict(config),
                       project=config.logger.project,
                       group=config.logger.group,
-                      name="Umaze-diverse-v2_HIQL")
+                      name=None)
     goal_info = None
     discrete = False
     if 'antmaze' in config.Env.dataset_id.lower():
@@ -271,7 +271,7 @@ def main(config: DictConfig):
     if config.GoalDS:
         gc_dataset = GCSDataset(dataset, **dict(config.GoalDS),
                                 discount=config.Env.discount)
-        if config.algo.algo_name == "icvf":
+        if config.algo.algo_name == "icvf" or config.algo.algo_name == "gotil":
             from src.icvf_utils import DebugPlotGenerator
             visualizer = DebugPlotGenerator(env_name, gc_dataset)
             
@@ -306,8 +306,24 @@ def main(config: DictConfig):
                                        **dict(config.algo))
         
     elif config.algo.algo_name == "gotil":
-        from src.generate_antmaze_random import obtain_agent_ds
-        agent_dataset = obtain_agent_ds()
+        
+        from src.generate_antmaze_random import obtain_agent_ds, get_dataset, combine_ds
+        if config.algo.path_to_agent_data == "":
+            agent_dataset = obtain_agent_ds()
+            print("Dataset obtained")
+            exit()
+        else:
+            print("Loading Agent dummy dataset")
+            agent_dataset = get_dataset(config.algo.path_to_agent_data)
+            expert_dataset = d4rl.qlearning_dataset(env)
+            mixed_ds = combine_ds(config.algo.num_expert_trajs, config.algo.num_agent_trajs, expert_dataset, agent_dataset)
+            #here rewards mean are 0, change smth to get non zero?
+            mixed_ds = d4rl_utils.get_dataset(env, dataset=mixed_ds,
+                                         gcrl=config.Env.gcrl,
+                                         normalize_states=config.Env.normalize_states,
+                                         normalize_rewards=config.Env.normalize_rewards)
+            agent_gc_dataset = GCSDataset(mixed_ds, **dict(config.GoalDS), discount=config.Env.discount)
+            
         expert_icvf = icvf.create_eqx_learner(config.seed,
                                        observations=example_batch['observations'],
                                        discount=config.Env.discount,
@@ -319,20 +335,20 @@ def main(config: DictConfig):
         
         agent = gotil.create_eqx_learner(config.seed,
                                         expert_icvf=expert_icvf,
-                                        agent_icvf=agent_icvf)
+                                        agent_icvf=agent_icvf,
+                                        **dict(config.algo))
+        expert_training_icvf = True
         
     for i in tqdm(range(1, total_steps + 1), smoothing=0.1, dynamic_ncols=True, desc="Training"):
-        if config.GoalDS:
-            pretrain_batch = gc_dataset.sample(config.batch_size, mode=config.algo.algo_name)
-        else:
-            pretrain_batch = dataset.sample(config.batch_size)
+        pretrain_batch = gc_dataset.sample(config.batch_size, mode=config.algo.algo_name)
             
         if config.algo.algo_name == "gotil":
             if i < total_steps / 2:
                 agent, update_info = agent.pretrain_expert(pretrain_batch)
             else:
-                
-                agent, update_info = agent.pretrain_agent(agent_batch_data)
+                expert_training_icvf = False
+                agent_dataset_batch = agent_gc_dataset.sample(config.batch_size)
+                agent, update_info = agent.pretrain_agent(agent_dataset_batch)
                 
         elif config.algo.algo_name == "hiql":
             agent, update_info = supply_rng(agent.pretrain_update)(pretrain_batch)
@@ -345,8 +361,14 @@ def main(config: DictConfig):
             train_metrics.update({f'training_stats/{k}': v for k, v in debug_statistics.items()})
             wandb.log(train_metrics, step=i)
             
-        if i % config.log_interval == 0 and config.algo.algo_name == "icvf":
-            debug_statistics = get_debug_statistics_icvf(agent, pretrain_batch)
+        if i % config.log_interval == 0 and (config.algo.algo_name == "icvf" or config.algo.algo_name == "gotil"):
+            if config.algo.algo_name == "gotil":
+                if expert_training_icvf:
+                    debug_statistics = get_debug_statistics_icvf(agent.expert_icvf, pretrain_batch)
+                else:
+                    debug_statistics = get_debug_statistics_icvf(agent.agent_icvf, pretrain_batch)
+            else:
+                debug_statistics = get_debug_statistics_icvf(agent, pretrain_batch)
             train_metrics = {f'training/{k}': v for k, v in update_info.items()}
             train_metrics.update({f'pretraining/debug/{k}': v for k, v in debug_statistics.items()})
             wandb.log(train_metrics, step=i)
@@ -356,8 +378,14 @@ def main(config: DictConfig):
             with open("icvf_model.eqx", "wb") as f:
                 eqx.tree_serialise_leaves(f, unensemble_model.phi_net)
                 
-        if i % config.eval_interval == 0 and config.algo.algo_name == "icvf":
-            visualizations = visualizer.generate_debug_plots(agent)
+        if i % config.eval_interval == 0 and (config.algo.algo_name == "icvf" or config.algo.algo_name == "gotil"):
+            if config.algo.algo_name == "gotil":
+                if expert_training_icvf:
+                    visualizations =  visualizer.generate_debug_plots(agent.expert_icvf)
+                else:
+                    visualizations =  visualizer.generate_debug_plots(agent.agent_icvf)
+            else:
+                visualizations = visualizer.generate_debug_plots(agent)
             eval_metrics = {f'visualizations/{k}': v for k, v in visualizations.items()}
             wandb.log(eval_metrics, step=i)
             

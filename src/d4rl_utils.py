@@ -40,11 +40,11 @@ def get_dataset(env: gym.Env,
                 filter_terminals=False,
                 obs_dtype=np.float32,
                 normalize_states=False,
-                normalize_rewards=False
+                normalize_rewards=False,
                 ):
+    
         if dataset is None:
             dataset = d4rl.qlearning_dataset(env)
-
         if clip_to_eps:
             lim = 1 - eps
             dataset['actions'] = np.clip(dataset['actions'], -lim, lim)
@@ -85,7 +85,7 @@ def get_dataset(env: gym.Env,
         if normalize_rewards:
             dataset = modify_reward(dataset, env_name=env.spec.id)
             print(f"Rewards mean: {dataset['rewards'].mean()}")
-            
+        
         return Dataset.create(
             observations=observations,
             next_observations=next_observations,

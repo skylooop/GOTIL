@@ -45,6 +45,7 @@ class GCDataset:
 
         goal_indx = np.where(np.random.rand(batch_size) < p_trajgoal / (1.0 - p_currgoal), middle_goal_indx, goal_indx)
         goal_indx = np.where(np.random.rand(batch_size) < p_currgoal, indx, goal_indx)
+        
         return goal_indx
 
     def sample(self, batch_size: int, indx=None):
@@ -76,7 +77,7 @@ class GCSDataset(GCDataset):
         batch = self.dataset.sample(batch_size, indx)
         goal_indx = self.sample_goals(indx)
         
-        if mode == "icvf":
+        if mode == "icvf" or mode == "gotil":
             icvf_desired_goal_indx = self.sample_goals(indx)
             icvf_goal_indx = np.where(np.random.rand(batch_size) < self.p_randomgoal, icvf_desired_goal_indx, goal_indx)
             

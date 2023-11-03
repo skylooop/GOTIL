@@ -37,7 +37,7 @@ class Dataset(FrozenDict):
         rewards: Array,
         masks: Array,
         next_observations: Data,
-        freeze=True,
+        freeze=False,
         **extra_fields
     ):
         data = {
