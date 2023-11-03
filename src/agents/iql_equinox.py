@@ -27,7 +27,7 @@ import pyrallis
 @dataclass
 class TrainConfig:
     project: str = "OfflineRL"
-    group: str = "IQL-EQX"
+    group: str = "IQL-EQX_ICVF_Scale"
     name: str = "IQL_EQX"
     dataset_id: str = "antmaze-large-diverse-v2"
     discount: float = 0.999
@@ -55,7 +55,7 @@ class TrainConfig:
     # path for checkpoints saving, optional
     checkpoints_path: Optional[str] = None
     actor_schedule: str = "none"
-    use_icvf_pretrain: bool = False
+    use_icvf_pretrain: bool = True
     # training random seed
     seed: int = 42
 
@@ -275,14 +275,15 @@ class VNet(eqx.Module):
             icvf_net = eqx.nn.MLP(in_size=state_dim, 
                               out_size=self.hidden_dims[-1], depth=len(self.hidden_dims), width_size=self.hidden_dims[-1],
                               key=mlp_key)
-            loaded_net = eqx.tree_deserialise_leaves("/home/m_bobrin/GOTIL/src/agents/icvf_model.eqx", icvf_net)
+            loaded_net = eqx.tree_deserialise_leaves("src/agents/icvf_model.eqx", icvf_net)
             net = eqx.tree_at(lambda mlp: mlp.layers[-1], loaded_net, net.layers[-1])
             # for loss
             is_linear = lambda x: isinstance(x, eqx.nn.Linear)
-            get_weights = lambda m: [x.weight
+            get_weights = lambda m: [x.weight.mean() #
                                     for x in jax.tree_util.tree_leaves(m, is_leaf=is_linear)
                                     if is_linear(x)]
-            self.icvf_weights = get_weights(net)[:-1] # only first two layers are pretrained by icvf
+            self.icvf_weights = jax.lax.stop_gradient(np.asarray(get_weights(net)[:-1])) # only first two layers are pretrained by icvf
+            
         self.net = net
     
     def __call__(self, obs):
@@ -347,7 +348,7 @@ def update_agent(agent, batch, buffer_key):
         q = jnp.minimum(q1, q2)
         
         v = eqx.filter_vmap(v_net)(batch['observations'])
-        value_loss = expectile_loss(q - v, expectile=agent.expectile).mean()# + 100.0 * l2_norm(v_net)
+        value_loss = expectile_loss(q - v, expectile=agent.expectile).mean() #+ 100.0 * (agent.v_learner.model.icvf_weights).mean()
         advantage = q - v
         return value_loss, {
             'value_loss': value_loss,

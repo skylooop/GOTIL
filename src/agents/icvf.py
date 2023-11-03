@@ -3,7 +3,7 @@ from jaxrl_m.typing import *
 import jax
 import jax.numpy as jnp
 import optax
-from jaxrl_m.common import TrainState, TrainTargetStateEQX, target_update, nonpytree_field
+from jaxrl_m.common import TrainTargetStateEQX, target_update, nonpytree_field
 
 import flax
 import flax.linen as nn
@@ -74,71 +74,6 @@ def icvf_loss(value_fn, target_value_fn, batch, config):
         'value_loss1': masked_mean((q1_gz-v1_gz)**2, batch['masks']), # Loss on s \neq s_+
         'value_loss2': masked_mean((q1_gz-v1_gz)**2, 1.0 - batch['masks']), # Loss on s = s_+
     }
-
-def periodic_target_update(
-    model: TrainState, target_model: TrainState, period: int
-) -> TrainState:
-    new_target_params = jax.tree_map(
-        lambda p, tp: optax.periodic_update(p, tp, model.step, period),
-        model.params, target_model.params
-    )
-    return target_model.replace(params=new_target_params)
-
-class ICVFAgent(flax.struct.PyTreeNode):
-    rng: jax.random.PRNGKey
-    value: TrainState
-    target_value: TrainState
-    config: dict = nonpytree_field()
-        
-    @jax.jit
-    def update(agent, batch):
-        def value_loss_fn(value_params):
-            value_fn = lambda s, g, z: agent.value(s, g, z, params=value_params)
-            target_value_fn = lambda s, g, z: agent.target_value(s, g, z)
-
-            return icvf_loss(value_fn, target_value_fn, batch, agent.config)
-        
-        if agent.config['periodic_target_update']:
-            new_target_value = periodic_target_update(agent.value, agent.target_value, int(1.0 / agent.config['target_update_rate']))
-        else:
-            new_target_value = target_update(agent.value, agent.target_value, agent.config['target_update_rate'])
-        new_value, value_info = agent.value.apply_loss_fn(loss_fn=value_loss_fn, has_aux=True)
-        return agent.replace(value=new_value, target_value=new_target_value), value_info
-    
-def create_learner(
-                 seed: int,
-                 observations: jnp.ndarray,
-                 value_def: nn.Module,
-                 optim_kwargs: dict = {
-                    'learning_rate': 0.00005,
-                    'eps': 0.0003125
-                 },
-                 discount: float = 0.95,
-                 target_update_rate: float = 0.005,
-                 expectile: float = 0.9,
-                 no_intent: bool = False,
-                 min_q: bool = True,
-                 periodic_target_update: bool = False,
-                **kwargs):
-
-        print('Extra kwargs:', kwargs)
-
-        rng = jax.random.PRNGKey(seed)
-        
-        value_params =  value_def.init(rng, observations, observations, observations).pop('params')
-        value = TrainState.create(value_def, value_params, tx=optax.adam(**optim_kwargs))
-        target_value = TrainState.create(value_def, value_params)
-
-        config = flax.core.FrozenDict(dict(
-            discount=discount,
-            target_update_rate=target_update_rate,
-            expectile=expectile,
-            no_intent=no_intent, 
-            min_q=min_q,
-            periodic_target_update=periodic_target_update,
-        ))
-
-        return ICVFAgent(rng=rng, value=value, target_value=target_value, config=config)
 
 class ICVF_EQX_Agent(eqx.Module):
     value_learner: TrainTargetStateEQX

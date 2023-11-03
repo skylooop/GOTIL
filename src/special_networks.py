@@ -108,6 +108,20 @@ class MonolithicVF(nn.Module):
             }
         return v1, v2
 
+class MonolithicVF_EQX(eqx.Module):
+    net: eqx.Module
+    
+    def __init__(self, key, state_dim, hidden_dims):
+        key, mlp_key = jax.random.split(key, 2)
+        self.net = eqxnn.MLP(
+            in_size=state_dim * 2, out_size=1, width_size=hidden_dims[-1], depth=len(hidden_dims), key=mlp_key
+        )
+        
+    def __call__(self, observations, intents):
+        # TODO: Maybe try FiLM conditioning like in SAC-RND?
+        conditioning = jnp.concatenate((observations, intents), axis=-1)
+        return self.net(conditioning)
+        
 class MultilinearVF_EQX(eqx.Module):
     phi_net: eqx.Module
     psi_net: eqx.Module
@@ -133,8 +147,8 @@ class MultilinearVF_EQX(eqx.Module):
         z = self.psi_net(intents)
         Tz = self.T_net(z)
         
-        phi_z = self.matrix_a(Tz * phi) # (1, 256)
-        psi_z = self.matrix_b(Tz * psi) # (1, 256)
+        phi_z = self.matrix_a(Tz * phi)
+        psi_z = self.matrix_b(Tz * psi)
         v = (phi_z * psi_z).sum(axis=-1)
         return v
 
