@@ -3,11 +3,19 @@ from jaxrl_m.typing import *
 import jax
 from jaxrl_m.common import TrainTargetStateEQX
 import equinox as eqx
-from src.agents.icvf import update
+from src.agents.icvf import update, eval_ensemble
 import dataclasses
 import optax
 from src.special_networks import MonolithicVF_EQX
+from tqdm.auto import tqdm
 
+# Optimal Transport Imports
+import ott
+from ott.geometry import pointcloud
+from ott.problems.linear import linear_problem
+from ott.solvers.linear import sinkhorn
+from ott.tools import plot, sinkhorn_divergence
+import functools
 
 class JointGotilAgent(eqx.Module):
     expert_icvf: TrainTargetStateEQX
@@ -23,7 +31,7 @@ class JointGotilAgent(eqx.Module):
     def pretrain_agent(self, pretrain_batch):
         agent, agent_info = update(self.agent_icvf, pretrain_batch)
         value_net, value_info = gotil_value_update(self.value_net, pretrain_batch, self.config) # V(s, z)
-        updated_cb, book_info = update_ot(self.expert_icvf, agent, value_net, pretrain_batch, self.agent_intent_cb)
+        updated_cb, book_info = update_ot(self.expert_icvf, value_net, pretrain_batch, self.agent_intent_cb)
         return dataclasses.replace(self, agent_icvf=agent, value_net=value_net, agent_intent_cb=updated_cb), value_info
 
 def expectile_loss(adv, diff, expectile=0.7):
@@ -71,15 +79,34 @@ def gotil_value_update(value_net, batch, config):
     updated_v_target = updated_v_learner.soft_update()
     return dataclasses.replace(value_net, model=updated_v_learner, target_model=updated_v_target), value_aux
 
-@eqx.filter_jit
-def update_ot(expert_icvf, agent_icvf, batch, agent_intent_cb):
-    pass
-    # #def ot_update()
+def sink_div(geom, a ,b):
+    ot = sinkhorn_divergence.sinkhorn_divergence(
+        geom,
+        x=geom.x,
+        a=a,
+        b=b,
+        y=geom.y,
+        static_b=True,
+    )
+    return ot.divergence, ot
+
+def ot_update(x, y, cost_fn, num_iter: int = 100, lr:float=0.2, epsilon:float=None):
+    cost_fn_vg = jax.jit(jax.value_and_grad(cost_fn, has_aux=True))
+    for i in tqdm(range(0, num_iter + 1), desc="Computing OT"):
+        geom = pointcloud.PointCloud(x, y, epsilon=epsilon)
+        (cost, ot), geom_g = cost_fn_vg(geom)
+        assert ot.converged
+        x = x - geom_g.x * lr
+    return x
+
+def update_ot(expert_icvf, agent_value, batch, agent_intent_cb):
+    expert_intents, _ = get_expert_intents(expert_icvf.value_learner.model.psi_net, batch['icvf_desired_goals'])
+    agent_marginals, _ = jax.nn.softmax(eval_value_ensemble(agent_value.model.model, batch['observations'], batch['icvf_desired_goals'])).squeeze()
+    expert_marginals, _ = jax.nn.softmax(eval_ensemble(expert_icvf.value_learner.model, batch['observations'], batch['icvf_desired_goals'], batch['icvf_desired_goals'])).squeeze()
     
-    # # obtain intents from expert (just psi_theta(desired_outcome))
-    # expert_intents, _ = get_expert_intents(expert_icvf.value_learner.model.psi_net, batch['icvf_desired_goals'])
-    # #ot_update(expert_intents, agent_intent_cb)
-    # #return 
+    agent_updated_intents = ot_update(x=agent_intent_cb, y=expert_intents,
+                                      cost_fn=functools.partial(sink_div, a=agent_marginals, b=expert_marginals))
+    return agent_updated_intents, #book_info
     
     
 def create_eqx_learner(seed: int,
