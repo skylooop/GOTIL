@@ -27,6 +27,7 @@ from jaxrl_m.wandb import setup_wandb
 
 from utils.rich_utils import print_config_tree
 from src.agents import hiql, icvf, gotil
+from src.agents.gotil import evaluate_with_trajectories_gotil
 from src.agents.icvf import update, eval_ensemble
 from src.gc_dataset import GCSDataset
 from src.utils import record_video
@@ -340,17 +341,18 @@ def main(config: DictConfig):
                                         actions=example_batch['actions'],
                                         **dict(config.algo))
         expert_training_icvf = True
-        
+    
+    rng = jax.random.PRNGKey(config.seed)
     for i in tqdm(range(1, total_steps + 1), smoothing=0.1, dynamic_ncols=True, desc="Training"):
         pretrain_batch = gc_dataset.sample(config.batch_size, mode=config.algo.algo_name)
             
         if config.algo.algo_name == "gotil": 
-            # if i < total_steps / 2:
-            #     agent, update_info = agent.pretrain_expert(pretrain_batch)
-            # else:
-            expert_training_icvf = False
-            agent_dataset_batch = agent_gc_dataset.sample(config.batch_size, mode=config.algo.algo_name)
-            agent, update_info = agent.pretrain_agent(agent_dataset_batch)
+            if i < total_steps / 2:
+                agent, update_info = agent.pretrain_expert(pretrain_batch)
+            else:
+                expert_training_icvf = False
+                agent_dataset_batch = agent_gc_dataset.sample(config.batch_size, mode=config.algo.algo_name)
+                agent, update_info, rng = agent.pretrain_agent(agent_dataset_batch, rng)
                 
         elif config.algo.algo_name == "hiql":
             agent, update_info = supply_rng(agent.pretrain_update)(pretrain_batch)
@@ -393,7 +395,8 @@ def main(config: DictConfig):
             wandb.log(eval_metrics, step=i)
             
             if config.algo.algo_name == "gotil":
-                pass
+                base_observation = jax.tree_map(lambda arr: arr[0], gc_dataset.dataset['observations'])
+                evaluate_with_trajectories_gotil()
                 
         if i % config.eval_interval == 0 and config.algo.algo_name == "hiql":
             policy_fn = functools.partial(supply_rng(agent.sample_actions), discrete=discrete)

@@ -296,17 +296,19 @@ class GaussianPolicy(eqx.Module):
     log_std_max: int = 2.0
     temperature: float = 10.0
     
-    def __init__(self, key, state_dim, action_dim, hidden_dims):
+    def __init__(self, key, state_dim, intents_dim, action_dim, hidden_dims):
         key, key_means, key_log_std = jax.random.split(key, 3)
         
-        self.net = eqx.nn.MLP(in_size=state_dim,
+        self.net = eqx.nn.MLP(in_size=state_dim + intents_dim,
                               out_size=2 * action_dim,
                               width_size=hidden_dims[0],
                               depth=len(hidden_dims),
                               key=key_means)
         
-    def __call__(self, state):
-        means, log_std = jnp.split(self.net(state), 2)
+    def __call__(self, state, intentions):
+        # Film conditioning??
+        x = jnp.concatenate([state, intentions], axis=-1)
+        means, log_std = jnp.split(self.net(x), 2)
         log_stds = jnp.clip(log_std, self.log_std_min, self.log_std_max)
         dist = FixedDistrax(distrax.MultivariateNormalDiag, loc=jax.nn.tanh(means),
                             scale_diag=jnp.exp(log_stds))
