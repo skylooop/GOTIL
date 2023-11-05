@@ -17,7 +17,7 @@ from ott.problems.linear import linear_problem
 from ott.solvers.linear import sinkhorn
 from ott.tools import plot, sinkhorn_divergence
 from tqdm.auto import tqdm
-
+from ott.utils import tqdm_progress_fn
 
 class JointGotilAgent(eqx.Module):
     expert_icvf: TrainTargetStateEQX
@@ -49,7 +49,7 @@ class JointGotilAgent(eqx.Module):
 @eqx.filter_jit
 def update_actor(actor_intents_learner, batch, agent_codebook, agent_value, expert_icvf):
     def intention_actor_loss(actor_intents_learner):
-        # target - expert intentionss
+        # target - expert intentions
         v1_a, v2_a = eval_value_ensemble(agent_value.model, batch['observations'], agent_codebook)
         nv1, nv2 = eval_value_ensemble(agent_value.model, batch['next_observations'], agent_codebook)
         v = (v1_a + v2_a) / 2
@@ -70,6 +70,7 @@ def update_actor(actor_intents_learner, batch, agent_codebook, agent_value, expe
 
     def actor_loss():
         pass
+    
     (val_intents_actor, aux_intents), actor_intents_grads = eqx.filter_value_and_grad(intention_actor_loss, has_aux=True)(actor_intents_learner.model)
     updated_actor_intents = actor_intents_learner.apply_updates(actor_intents_grads)
     
@@ -98,11 +99,11 @@ def sink_div(combined, b, batch):
         b=b,
         y=geom.y,
         static_b=True,
-        sinkhorn_kwargs={"use_danskin": True}
+        sinkhorn_kwargs={"use_danskin": True},
     )
     return ot.divergence, ot
 
-def ot_update(x, y, agent_value, b, cost_fn, batch, num_iter: int = 100, lr:float = 0.2, epsilon:float = 0.25):
+def ot_update(x, y, agent_value, b, cost_fn, batch, num_iter: int = 100, lr: float = 0.2, epsilon:float = 0.25):
     cost_fn_vg = eqx.filter_jit(eqx.filter_value_and_grad(cost_fn, has_aux=True))
     
     for i in tqdm(range(0, num_iter + 1), desc="Computing OT"):

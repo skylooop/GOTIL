@@ -344,12 +344,12 @@ def main(config: DictConfig):
         pretrain_batch = gc_dataset.sample(config.batch_size, mode=config.algo.algo_name)
             
         if config.algo.algo_name == "gotil":
-            # if i < total_steps / 2:
-            #     agent, update_info = agent.pretrain_expert(pretrain_batch)
-            # else:
-            expert_training_icvf = False
-            agent_dataset_batch = agent_gc_dataset.sample(config.batch_size, mode=config.algo.algo_name)
-            agent, update_info = agent.pretrain_agent(agent_dataset_batch)
+            if i < total_steps / 2:
+                agent, update_info = agent.pretrain_expert(pretrain_batch)
+            else:
+                expert_training_icvf = False
+                agent_dataset_batch = agent_gc_dataset.sample(config.batch_size, mode=config.algo.algo_name)
+                agent, update_info = agent.pretrain_agent(agent_dataset_batch)
                 
         elif config.algo.algo_name == "hiql":
             agent, update_info = supply_rng(agent.pretrain_update)(pretrain_batch)
