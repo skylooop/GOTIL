@@ -274,17 +274,16 @@ def main(config: DictConfig):
         if config.algo.algo_name == "icvf" or config.algo.algo_name == "gotil":
             from src.icvf_utils import DebugPlotGenerator
             visualizer = DebugPlotGenerator(env_name, gc_dataset)
-            
         if 'antmaze' in env_name:
-            example_trajectory = gc_dataset.sample(50, indx=np.arange(1000, 1050))
+            example_trajectory = gc_dataset.sample(50, indx=np.arange(1000, 1050), mode=config.algo.algo_name)
         elif 'kitchen' in env_name:
-            example_trajectory = gc_dataset.sample(50, indx=np.arange(0, 50))
+            example_trajectory = gc_dataset.sample(50, indx=np.arange(0, 50), mode=config.algo.algo_name)
         elif 'calvin' in env_name:
-            example_trajectory = gc_dataset.sample(50, indx=np.arange(0, 50))
+            example_trajectory = gc_dataset.sample(50, indx=np.arange(0, 50), mode=config.algo.algo_name)
         elif 'procgen-500' in env_name:
-            example_trajectory = gc_dataset.sample(50, indx=np.arange(5000, 5050))
+            example_trajectory = gc_dataset.sample(50, indx=np.arange(5000, 5050), mode=config.algo.algo_name)
         elif 'procgen-1000' in env_name:
-            example_trajectory = gc_dataset.sample(50, indx=np.arange(5000, 5050))
+            example_trajectory = gc_dataset.sample(50, indx=np.arange(5000, 5050), mode=config.algo.algo_name)
         else:
             pass
             #TODO: Add new environments
@@ -345,12 +344,12 @@ def main(config: DictConfig):
         pretrain_batch = gc_dataset.sample(config.batch_size, mode=config.algo.algo_name)
             
         if config.algo.algo_name == "gotil":
-            if i < total_steps / 2:
-                agent, update_info = agent.pretrain_expert(pretrain_batch)
-            else:
-                expert_training_icvf = False
-                agent_dataset_batch = agent_gc_dataset.sample(config.batch_size, mode=config.algo.algo_name)
-                agent, update_info = agent.pretrain_agent(agent_dataset_batch)
+            # if i < total_steps / 2:
+            #     agent, update_info = agent.pretrain_expert(pretrain_batch)
+            # else:
+            expert_training_icvf = False
+            agent_dataset_batch = agent_gc_dataset.sample(config.batch_size, mode=config.algo.algo_name)
+            agent, update_info = agent.pretrain_agent(agent_dataset_batch)
                 
         elif config.algo.algo_name == "hiql":
             agent, update_info = supply_rng(agent.pretrain_update)(pretrain_batch)
@@ -392,8 +391,9 @@ def main(config: DictConfig):
             eval_metrics = {f'visualizations/{k}': v for k, v in visualizations.items()}
             wandb.log(eval_metrics, step=i)
             
-            
-            
+            if config.algo.algo_name == "gotil":
+                pass
+                
         if i % config.eval_interval == 0 and config.algo.algo_name == "hiql":
             policy_fn = functools.partial(supply_rng(agent.sample_actions), discrete=discrete)
             high_policy_fn = functools.partial(supply_rng(agent.sample_high_actions))

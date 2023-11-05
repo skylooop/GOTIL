@@ -55,7 +55,7 @@ class TrainConfig:
     # path for checkpoints saving, optional
     checkpoints_path: Optional[str] = None
     actor_schedule: str = "none"
-    use_icvf_pretrain: bool = True
+    use_icvf_pretrain: bool = False
     # training random seed
     seed: int = 42
 
@@ -279,10 +279,10 @@ class VNet(eqx.Module):
             net = eqx.tree_at(lambda mlp: mlp.layers[-1], loaded_net, net.layers[-1])
             # for loss
             is_linear = lambda x: isinstance(x, eqx.nn.Linear)
-            get_weights = lambda m: [x.weight.mean() #
+            get_weights = lambda m: [x.weight
                                     for x in jax.tree_util.tree_leaves(m, is_leaf=is_linear)
                                     if is_linear(x)]
-            self.icvf_weights = jax.lax.stop_gradient(np.asarray(get_weights(net)[:-1])) # only first two layers are pretrained by icvf
+            self.icvf_weights = jax.lax.stop_gradient(get_weights(net)[:-1]) # only first two layers are pretrained by icvf
             
         self.net = net
     
@@ -391,6 +391,7 @@ def update_agent(agent, batch, buffer_key):
 
     rng, new_buffer_key = jax.random.split(buffer_key, 2)
     return dataclasses.replace(agent, v_learner=updated_v_learner, q_learner=updated_q_learner, actor_learner=updated_actor_learner), new_buffer_key, {**aux_v, **aux_q, **aux_actor}
+
 
 @pyrallis.wrap()
 def train(config: TrainConfig):
