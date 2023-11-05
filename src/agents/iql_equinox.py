@@ -311,7 +311,30 @@ class GaussianPolicy(eqx.Module):
         dist = FixedDistrax(distrax.MultivariateNormalDiag, loc=jax.nn.tanh(means),
                             scale_diag=jnp.exp(log_stds))
         return dist
-      
+
+class GaussianIntentPolicy(eqx.Module):
+    net: eqx.Module
+    
+    log_std_min: int = -20.0
+    log_std_max: int = 2.0
+    temperature: float = 10.0
+    
+    def __init__(self, key, state_dim, intent_dim, hidden_dims):
+        key, key_means, key_log_std = jax.random.split(key, 3)
+        
+        self.net = eqx.nn.MLP(in_size=state_dim,
+                              out_size=2 * intent_dim,
+                              width_size=hidden_dims[0],
+                              depth=len(hidden_dims),
+                              key=key_means)
+        
+    def __call__(self, state):
+        means, log_std = jnp.split(self.net(state), 2)
+        log_stds = jnp.clip(log_std, self.log_std_min, self.log_std_max)
+        dist = FixedDistrax(distrax.MultivariateNormalDiag, loc=jax.nn.tanh(means),
+                            scale_diag=jnp.exp(log_stds))
+        return dist
+
 def expectile_loss(diff, expectile=0.9):
     weight = jnp.where(diff > 0, expectile, (1 - expectile))
     return weight * (diff**2)

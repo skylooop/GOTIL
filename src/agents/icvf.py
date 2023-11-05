@@ -78,7 +78,7 @@ def icvf_loss(value_fn, target_value_fn, batch, config):
 class ICVF_EQX_Agent(eqx.Module):
     value_learner: TrainTargetStateEQX
     config: dict
-
+ 
 @eqx.filter_vmap(in_axes=dict(ensemble=eqx.if_array(0), s=None, g=None, z=None), out_axes=0)
 def eval_ensemble(ensemble, s, g, z):
     return eqx.filter_vmap(ensemble)(s, g, z)
