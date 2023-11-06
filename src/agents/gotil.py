@@ -46,49 +46,42 @@ class JointGotilAgent(eqx.Module):
     def pretrain_agent(self, pretrain_batch, seed):
         rng, intents_sample = jax.random.split(seed, 2)
         aux = {}
-        agent, agent_info = update(self.agent_icvf, pretrain_batch) # 1. Update current ICVF estimation
+        agent, agent_info = update(self.agent_icvf, pretrain_batch) # 1. Update current ICVF estimation (substitute V(s, z))
         #value_net, value_info = gotil_value_update(self.value_net, pretrain_batch, self.config) # V(s, z)
-        agent_updated_codebook, agent_updated_v, ot_info = update_ot(self.expert_icvf, self.value_net, pretrain_batch, self.agent_intent_cb) # update codebook and V by OT
-        updated_actor_intents_learner, updated_actor = update_actor(self.actor_intents_learner, self.actor_learner, pretrain_batch, agent_updated_codebook, agent_updated_v, self.expert_icvf, seed)
+        #agent_updated_codebook, agent_updated_v, ot_info = update_ot(self.expert_icvf, self.value_net, pretrain_batch, self.agent_intent_cb) # update codebook and V by OT
+        updated_actor_intents_learner, updated_actor = update_actor(self.actor_intents_learner, self.actor_learner, pretrain_batch, self.value_net, self.expert_icvf, seed)
         aux.update(agent_info)
-        aux.update({'OT divergence': ot_info})
+        #aux.update({'OT divergence': ot_info})
         return dataclasses.replace(self, agent_icvf=agent, value_net=agent_updated_v, agent_intent_cb=agent_updated_codebook, actor_intents_learner=updated_actor_intents_learner, actor_learner=updated_actor), agent_info, rng
 
 @eqx.filter_jit
-def update_actor(actor_intents_learner, actor_learner, batch, agent_codebook, agent_value, expert_icvf, seed):
+def update_actor(actor_intents_learner, actor_learner, batch, agent_value, seed):
+    # Update high-level actor, which outputs intentions based on state
     def intention_actor_loss(actor_intents_learner):
-        # target - expert intentions
-        v1_a, v2_a = eval_value_ensemble(agent_value.model, batch['observations'], agent_codebook)
-        nv1, nv2 = eval_value_ensemble(agent_value.model, batch['next_observations'], agent_codebook)
-        # target1, target2 = eval_ensemble(expert_icvf.value_learner.target_model, batch['observations'], batch['icvf_desired_goals'], batch['icvf_desired_goals'])
-        # target = jnp.minimum(target1, target2)
-        # next_target1, next_target2 = eval_ensemble(expert_icvf.value_learner.target_model, batch['next_observations'], batch['icvf_desired_goals'], batch['icvf_desired_goals'])
-        # ntarget = (next_target1 + next_target2) / 2.
-        #adv = ntarget - target
-        v = (v1_a + v2_a) / 2
-        nv = (nv1 + nv2) / 2
-        adv = nv - v
-        exp_a = jnp.exp(adv * 10.0)
-        exp_a = jnp.minimum(exp_a, 100.0)
-        
+        v1_a, v2_a = eval_value_ensemble(agent_value.model, batch['observations'], agent_codebook) # V(s, z)
+        v = (v1_a + v2_a) / 2.0
+        #exp_a = jnp.exp(v * 5.0) # TODO: Maybe make another V(s) for normalization
+        #exp_a = jnp.minimum(exp_a, 100.0)
+        exp_a = v
         dist = eqx.filter_vmap(actor_intents_learner)(batch['observations'])
-        target_intents, _ = get_expert_intents(expert_icvf.value_learner.model.psi_net, batch['icvf_desired_goals'])
-        log_probs = dist.log_prob(target_intents)
+        intentions = dist.sample(seed=seed)
+        #target_intents, _ = get_expert_intents(expert_icvf.value_learner.model.psi_net, batch['icvf_desired_goals'])
+        log_probs = dist.log_prob(intentions)
         actor_intents_loss = -(exp_a.squeeze() * log_probs).mean()
         
         return actor_intents_loss, {
             'high_actor_loss': actor_intents_loss,
-            'high_adv': adv.mean(),
+            'high_v': v.mean(),
     }
 
     def actor_loss(actor, intents):
-        v1, v2 = eval_value_ensemble(agent_value.model, batch['observations'], agent_codebook)
-        nv1, nv2 = eval_value_ensemble(agent_value.model, batch['next_observations'], agent_codebook)
+        v1, v2 = eval_value_ensemble(agent_value.model, batch['observations'], intents)
+        nv1, nv2 = eval_value_ensemble(agent_value.model, batch['next_observations'], intents)
         v = (v1 + v2) / 2
         nv = (nv1 + nv2) / 2
 
         adv = nv - v
-        exp_a = jnp.exp(adv * 10.0)
+        exp_a = jnp.exp(adv * 5.0)
         exp_a = jnp.minimum(exp_a, 100.0).squeeze()
         dist = eqx.filter_vmap(actor)(batch['observations'], intents)
         log_probs = dist.log_prob(batch['actions'])
@@ -148,8 +141,8 @@ def ot_update(x, y, agent_value, b, cost_fn, batch, num_iter: int = 100, lr: flo
     return x, agent_value, cost
 
 def update_ot(expert_icvf, agent_value, batch, agent_intent_cb):
-    expert_intents, _ = get_expert_intents(expert_icvf.value_learner.model.psi_net, batch['observations']) # change z here    
-    expert_marginals, _ = eval_ensemble(expert_icvf.value_learner.model, batch['observations'], batch['icvf_desired_goals'], batch['icvf_desired_goals'])
+    expert_intents, _ = get_expert_intents(expert_icvf.value_learner.model.psi_net, batch['observations']) # change z here
+    expert_marginals, _ = eval_ensemble(expert_icvf.value_learner.model, batch['observations'], expert_intents, expert_intents)
     expert_marginals = jax.nn.softmax(expert_marginals, axis=0).squeeze()
     
     agent_updated_codebook, agent_updated, ot_info = ot_update(x=agent_intent_cb, y=expert_intents, agent_value=agent_value, b=expert_marginals, cost_fn=sink_div, batch=batch)
