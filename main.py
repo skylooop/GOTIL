@@ -327,6 +327,7 @@ def main(config: DictConfig):
         expert_icvf = icvf.create_eqx_learner(config.seed,
                                        observations=example_batch['observations'],
                                        discount=config.Env.discount,
+                                       load_pretrained_phi=True,
                                        **dict(config.algo))
         agent_icvf = icvf.create_eqx_learner(config.seed,
                                        observations=example_batch['observations'], # TODO: Replace with random actions from SMODICE
@@ -347,13 +348,13 @@ def main(config: DictConfig):
         pretrain_batch = gc_dataset.sample(config.batch_size, mode=config.algo.algo_name)
             
         if config.algo.algo_name == "gotil": 
-            if i < total_steps / 2:
-                agent, update_info = agent.pretrain_expert(pretrain_batch)
-            else:
-                # save expert
-                expert_training_icvf = False
-                agent_dataset_batch = agent_gc_dataset.sample(config.batch_size, mode=config.algo.algo_name)
-                agent, update_info, rng = agent.pretrain_agent(agent_dataset_batch, rng)
+            # if i < total_steps / 2:
+            #     agent, update_info = agent.pretrain_expert(pretrain_batch)
+            # else:
+            # save expert
+            expert_training_icvf = False
+            agent_dataset_batch = agent_gc_dataset.sample(config.batch_size, mode=config.algo.algo_name)
+            agent, update_info, rng = agent.pretrain_agent(agent_dataset_batch, rng)
                 
         elif config.algo.algo_name == "hiql":
             agent, update_info = supply_rng(agent.pretrain_update)(pretrain_batch)

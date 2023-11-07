@@ -5,9 +5,9 @@ import jax.numpy as jnp
 import optax
 from jaxrl_m.common import TrainTargetStateEQX, target_update, nonpytree_field
 
-import flax
-import flax.linen as nn
+import equinox.nn as nn
 
+import functools
 import equinox as eqx
 from src.special_networks import MultilinearVF_EQX
 import dataclasses
@@ -96,6 +96,7 @@ def create_eqx_learner(seed: int,
                             'learning_rate': 0.00005,
                             'eps': 0.0003125
                         },
+                        load_pretrained_phi: bool=False,
                         discount: float = 0.95,
                         target_update_rate: float = 0.005,
                         expectile: float = 0.9,
@@ -106,9 +107,19 @@ def create_eqx_learner(seed: int,
         print('Extra kwargs:', kwargs)
         rng = jax.random.PRNGKey(seed)
         
+        if load_pretrained_phi:
+            network_cls = functools.partial(nn.MLP, in_size=29, out_size=hidden_dims[-1],
+                                        width_size=hidden_dims[0], depth=len(hidden_dims),
+                                        final_activation=jax.nn.relu)
+            phi_net = network_cls(key=rng)
+            loaded_phi_net = eqx.tree_deserialise_leaves("/home/m_bobrin/GOTIL/icvf_phi_300k_umaze.eqx", phi_net)
+        else:
+            loaded_phi_net = None
+            
         @eqx.filter_vmap
         def ensemblize(keys):
-            return MultilinearVF_EQX(key=keys, state_dim=observations.shape[-1], hidden_dims=hidden_dims)
+            return MultilinearVF_EQX(key=keys, state_dim=observations.shape[-1], hidden_dims=hidden_dims,
+                                     pretrained_phi=loaded_phi_net)
         
         value_learner = TrainTargetStateEQX.create(
             model=ensemblize(jax.random.split(rng, 2)),
