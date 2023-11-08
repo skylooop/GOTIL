@@ -137,12 +137,6 @@ def main(config: DictConfig):
             import gym
             env = gym.make(env_name)
         env = EpisodeMonitor(env)
-        # RUN generate_antmaze_random.py
-        # offline ds - random noisy data + some successful trajs
-        # offline_dataset = get_dataset("d4rl_ext/antmaze_demos/antmaze-umaze-v2-randomstart-noiserandomaction.hdf5")
-        # offline_dataset = d4rl_utils.get_dataset(env, FLAGS.env_name, dataset=offline_dataset)
-        # TODO: Add to ds above some successful trajs
-        
         dataset = d4rl_utils.get_dataset(env, 
                                          gcrl=config.Env.gcrl, # for GCRL, just change terminals
                                          normalize_states=config.Env.normalize_states,
@@ -398,7 +392,10 @@ def main(config: DictConfig):
             
             if config.algo.algo_name == "gotil":
                 base_observation = jax.tree_map(lambda arr: arr[0], gc_dataset.dataset['observations'])
-                evaluate_with_trajectories_gotil()
+                returns = evaluate_with_trajectories_gotil(env=env, actor=agent.actor_learner.model, 
+                                                           num_episodes=config.eval_episodes, base_observation=base_observation,
+                                                           seed=rng)
+                wandb.log({'Eval Returns': returns}, step=i)
                 
         if i % config.eval_interval == 0 and config.algo.algo_name == "hiql":
             policy_fn = functools.partial(supply_rng(agent.sample_actions), discrete=discrete)
