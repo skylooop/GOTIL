@@ -292,7 +292,7 @@ class VNet(eqx.Module):
 class GaussianPolicy(eqx.Module):
     net: eqx.Module
     
-    log_std_min: int = -20.0
+    log_std_min: int = -5.0
     log_std_max: int = 2.0
     temperature: float = 10.0
     
@@ -317,23 +317,25 @@ class GaussianPolicy(eqx.Module):
 class GaussianIntentPolicy(eqx.Module):
     net: eqx.Module
     
-    log_std_min: int = -20.0
+    log_std_min: int = -5.0
     log_std_max: int = 2.0
     temperature: float = 10.0
+    log_stds: Array
     
     def __init__(self, key, state_dim, intent_dim, hidden_dims):
         key, key_means, key_log_std = jax.random.split(key, 3)
         
         self.net = eqx.nn.MLP(in_size=state_dim,
-                              out_size=2 * intent_dim,
+                              out_size=intent_dim,
                               width_size=hidden_dims[0],
                               depth=len(hidden_dims),
                               key=key_means)
+        self.log_stds = jnp.zeros(shape=(intent_dim, ), dtype=jnp.float32)
         
     def __call__(self, state):
-        means, log_std = jnp.split(self.net(state), 2)
-        log_stds = jnp.clip(log_std, self.log_std_min, self.log_std_max)
-        dist = FixedDistrax(distrax.MultivariateNormalDiag, loc=jax.nn.tanh(means),
+        means = self.net(state)
+        log_stds = jnp.clip(self.log_stds, self.log_std_min, self.log_std_max)
+        dist = FixedDistrax(distrax.MultivariateNormalDiag, loc=means,
                             scale_diag=jnp.exp(log_stds))
         return dist
 
