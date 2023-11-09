@@ -128,12 +128,17 @@ class MultilinearVF_EQX(eqx.Module):
     T_net: eqx.Module
     matrix_a: eqx.Module
     matrix_b: eqx.Module
+    gotil_psi: Any = None
     
-    def __init__(self, key, state_dim, hidden_dims, pretrained_phi=None):
-        key, phi_key, psi_key, t_key, matrix_a_key, matrix_b_key = jax.random.split(key, 6)
+    def __init__(self, key, state_dim, hidden_dims, pretrained_phi=None, mode=None):
+        key, phi_key, psi_key, t_key, matrix_a_key, matrix_b_key, gotil_mlp_key = jax.random.split(key, 7)
         network_cls = functools.partial(eqxnn.MLP, in_size=state_dim, out_size=hidden_dims[-1],
                                         width_size=hidden_dims[0], depth=len(hidden_dims),
                                         final_activation=jax.nn.relu)
+        if mode is not None:  # !!!
+            self.gotil_psi = eqxnn.MLP(
+            in_size=state_dim + hidden_dims[-1], out_size=hidden_dims[-1], width_size=hidden_dims[-1], depth=len(hidden_dims), key=gotil_mlp_key, final_activation=jax.nn.tanh
+        )
         if pretrained_phi is None:
             self.phi_net = network_cls(key=phi_key)
         else:
@@ -145,17 +150,26 @@ class MultilinearVF_EQX(eqx.Module):
         self.matrix_a = eqxnn.Linear(in_features=hidden_dims[-1], out_features=hidden_dims[-1], key=matrix_a_key)
         self.matrix_b = eqxnn.Linear(in_features=hidden_dims[-1], out_features=hidden_dims[-1], key=matrix_b_key)
         
-    def __call__(self, observations, outcomes, intents):
-        phi = self.phi_net(observations)
-        psi = self.psi_net(outcomes)
-        z = self.psi_net(intents)
-        Tz = self.T_net(z)
-        
-        phi_z = self.matrix_a(Tz * phi)
-        psi_z = self.matrix_b(Tz * psi)
-        v = (phi_z * psi_z).sum(axis=-1)
+    def __call__(self, observations, outcomes, intents, mode=None):
+        if mode is None:
+            phi = self.phi_net(observations)
+            psi = self.psi_net(outcomes)
+            z = self.psi_net(intents)
+            Tz = self.T_net(z)
+            
+            phi_z = self.matrix_a(Tz * phi)
+            psi_z = self.matrix_b(Tz * psi)
+            v = (phi_z * psi_z).sum(axis=-1)
+        else:
+            #here we ignore outcomes
+            phi = jax.lax.stop_gradient(self.phi_net(observations))
+            psi = self.gotil_psi(observations, intents)
+            Tz = jax.lax.stop_gradient(self.T_net(intents))
+            
+            phi_z = self.matrix_a(Tz * phi)
+            psi_z = self.matrix_b(Tz * psi)
+            v = (phi_z * psi_z).sum(axis=-1)
         return v
-
 
 def get_rep(
         encoder: nn.Module, targets: jnp.ndarray, bases: jnp.ndarray = None,

@@ -16,7 +16,7 @@ def expectile_loss(adv, diff, expectile=0.8):
     weight = jnp.where(adv >= 0, expectile, (1 - expectile))
     return weight * diff ** 2
 
-def icvf_loss(value_fn, target_value_fn, batch, config):
+def icvf_loss(value_fn, target_value_fn, batch, config, intents=None, mode=None):
     if config['no_intent']:
         batch['icvf_desired_goals'] = jax.tree_map(jnp.ones_like, batch['icvf_desired_goals'])
 
@@ -36,19 +36,27 @@ def icvf_loss(value_fn, target_value_fn, batch, config):
     # Compute the advantage of s -> s' under z
     # r(s, z) + V(s', z, z) - V(s, z, z)
     ###
-
     (next_v1_zz, next_v2_zz) = eval_ensemble(target_value_fn, batch['next_observations'], batch['icvf_desired_goals'], batch['icvf_desired_goals'])
     if config['min_q']:
         next_v_zz = jnp.minimum(next_v1_zz, next_v2_zz)
     else:
-        next_v_zz = (next_v1_zz + next_v2_zz) / 2
+        next_v_zz = (next_v1_zz + next_v2_zz) / 2.
     
     q_zz = batch['icvf_desired_rewards'] + config['discount'] * batch['icvf_desired_masks'] * next_v_zz
-
     (v1_zz, v2_zz) = eval_ensemble(target_value_fn, batch['observations'], batch['icvf_desired_goals'], batch['icvf_desired_goals'])
-    v_zz = (v1_zz + v2_zz) / 2
-    adv = q_zz - v_zz
-
+    v_zz = (v1_zz + v2_zz) / 2.
+    
+    if mode is None:
+        adv = q_zz - v_zz
+    else:
+        eval_ensemble_gotil = functools.partial(eval_ensemble, mode=mode)
+        (next_v1_zz, next_v2_zz) = eval_ensemble_gotil(target_value_fn, batch['next_observations'], batch['icvf_desired_goals'], intents)
+        next_v_zz = (next_v1_zz + next_v2_zz) / 2.
+        (v1_zz, v2_zz) = eval_ensemble_gotil(target_value_fn, batch['observations'], batch['icvf_desired_goals'], intents)
+        v_zz = (v1_zz + v2_zz) / 2.
+        
+        adv = next_v_zz - v_zz
+        
     value_loss1 = expectile_loss(adv, q1_gz-v1_gz, config['expectile']).mean()
     value_loss2 = expectile_loss(adv, q2_gz-v2_gz, config['expectile']).mean()
     value_loss = value_loss1 + value_loss2
@@ -79,13 +87,13 @@ class ICVF_EQX_Agent(eqx.Module):
     value_learner: TrainTargetStateEQX
     config: dict
  
-@eqx.filter_vmap(in_axes=dict(ensemble=eqx.if_array(0), s=None, g=None, z=None), out_axes=0)
-def eval_ensemble(ensemble, s, g, z):
-    return eqx.filter_vmap(ensemble)(s, g, z)
+@eqx.filter_vmap(in_axes=dict(ensemble=eqx.if_array(0), s=None, g=None, z=None, mode=None), out_axes=0)
+def eval_ensemble(ensemble, s, g, z, mode=None):
+    return eqx.filter_vmap(ensemble)(s, g, z, mode)
 
 @eqx.filter_jit
-def update(agent, batch):
-    (val, value_aux), v_grads = eqx.filter_value_and_grad(icvf_loss, has_aux=True)(agent.value_learner.model, agent.value_learner.target_model, batch, agent.config)
+def update(agent, batch, intents=None, mode=None):
+    (val, value_aux), v_grads = eqx.filter_value_and_grad(icvf_loss, has_aux=True)(agent.value_learner.model, agent.value_learner.target_model, batch, agent.config, intents=intents, mode=mode)
     updated_v_learner = agent.value_learner.apply_updates(v_grads).soft_update()
     return dataclasses.replace(agent, value_learner=updated_v_learner, config=agent.config), value_aux
     
@@ -105,6 +113,8 @@ def create_eqx_learner(seed: int,
                         periodic_target_update: bool = False,
                         **kwargs):
         print('Extra kwargs:', kwargs)
+        mode = kwargs.pop("mode", None) #!!!
+        
         rng = jax.random.PRNGKey(seed)
         
         if load_pretrained_phi:
@@ -119,7 +129,7 @@ def create_eqx_learner(seed: int,
         @eqx.filter_vmap
         def ensemblize(keys):
             return MultilinearVF_EQX(key=keys, state_dim=observations.shape[-1], hidden_dims=hidden_dims,
-                                     pretrained_phi=loaded_phi_net)
+                                     pretrained_phi=loaded_phi_net, mode=mode)
         
         value_learner = TrainTargetStateEQX.create(
             model=ensemblize(jax.random.split(rng, 2)),

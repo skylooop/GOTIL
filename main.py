@@ -326,7 +326,9 @@ def main(config: DictConfig):
         agent_icvf = icvf.create_eqx_learner(config.seed,
                                        observations=example_batch['observations'], # TODO: Replace with random actions from SMODICE
                                        discount=config.Env.discount,
-                                       **dict(config.algo))
+                                       **dict(config.algo),
+                                       load_pretrained_phi=False,
+                                       mode="gotil") # !!!!
         
         agent = gotil.create_eqx_learner(config.seed,
                                         expert_icvf=expert_icvf,

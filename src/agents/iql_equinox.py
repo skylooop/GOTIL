@@ -310,7 +310,7 @@ class GaussianPolicy(eqx.Module):
         x = jnp.concatenate([state, intentions], axis=-1)
         means, log_std = jnp.split(self.net(x), 2)
         log_stds = jnp.clip(log_std, self.log_std_min, self.log_std_max)
-        dist = FixedDistrax(distrax.MultivariateNormalDiag, loc=jax.nn.tanh(means),
+        dist = FixedDistrax(distrax.MultivariateNormalDiag, loc=means,
                             scale_diag=jnp.exp(log_stds))
         return dist
 

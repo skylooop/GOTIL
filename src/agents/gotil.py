@@ -25,8 +25,7 @@ class JointGotilAgent(eqx.Module):
     value_net: TrainTargetStateEQX
     actor_intents_learner: TrainStateEQX
     actor_learner: TrainStateEQX
-    
-    #agent_intent_cb: Array
+
     config: dict
     
     @eqx.filter_jit
@@ -46,10 +45,10 @@ class JointGotilAgent(eqx.Module):
     def pretrain_agent(self, pretrain_batch, seed):
         rng, intents_sample = jax.random.split(seed, 2)
         aux = {}
-        agent, agent_info = update(self.agent_icvf, pretrain_batch)
         #value_net, value_info = gotil_value_update(self.value_net, pretrain_batch, self.config) # V(s, z)
         #agent_updated_codebook, agent_updated_v, ot_info = update_ot(self.expert_icvf, self.value_net, pretrain_batch, self.agent_intent_cb) # update codebook and V by OT
-        updated_actor_intents_learner, updated_actor, aux_info = update_actors(self.actor_intents_learner, self.actor_learner, pretrain_batch, self.value_net, intents_sample)
+        updated_actor_intents_learner, updated_actor, intents, aux_info = update_actors(self.actor_intents_learner, self.actor_learner, pretrain_batch, self.value_net, intents_sample)
+        agent, agent_icvf_info = update(self.agent_icvf, pretrain_batch, intents, mode="gotil")
         aux.update(aux_info)
         return dataclasses.replace(self, agent_icvf=agent, actor_intents_learner=updated_actor_intents_learner, actor_learner=updated_actor), aux_info, rng
 
@@ -59,8 +58,7 @@ def update_actors(actor_intents_learner, actor_learner, batch, agent_value, seed
     def intention_actor_loss(actor_intents_learner, intents):
         v1_a, v2_a = eval_value_ensemble(agent_value.model, batch['observations'], intents) # V(s, z)
         v = (v1_a + v2_a) / 2.0
-        exp_a = jnp.exp(v * 5.0)
-        exp_a = jnp.minimum(exp_a, 100.0)
+        exp_a = jax.nn.softplus(v)
         dist = eqx.filter_vmap(actor_intents_learner)(batch['next_observations'])
         log_probs_intents = dist.log_prob(intents)
         actor_intents_loss = -(exp_a * log_probs_intents).mean()
@@ -99,7 +97,7 @@ def update_actors(actor_intents_learner, actor_learner, batch, agent_value, seed
     updated_actor = actor_learner.apply_updates(actor_grads)
     
     aux_info.update({"High Level Actor": aux_intents,"Low Level Actor": aux_actor})
-    return updated_actor_intents, updated_actor, aux_info
+    return updated_actor_intents, updated_actor, intents, aux_info
     
 def expectile_loss(adv, diff, expectile=0.7):
     weight = jnp.where(adv >= 0, expectile, (1 - expectile))
@@ -153,7 +151,6 @@ def create_eqx_learner(seed: int,
                        agent_icvf,
                        observations,
                        actions,
-                       batch_size: int,
                        hidden_dims: list = [256, 256],
                        intent_codebook_dim: int = 256,
                        discount: float = 0.99,
@@ -166,7 +163,6 @@ def create_eqx_learner(seed: int,
     
     rng = jax.random.PRNGKey(seed)
     rng, value_model, actor_learner_key = jax.random.split(rng, 3)
-    agent_intent_cb = jax.random.normal(key=rng, shape=(batch_size, intent_codebook_dim), dtype=jnp.float32) # init intentions for dummy agent    
     
     @eqx.filter_vmap
     def ensemblize(keys):
@@ -200,7 +196,6 @@ def create_eqx_learner(seed: int,
         )
     return JointGotilAgent(expert_icvf=expert_icvf, agent_icvf=agent_icvf, actor_intents_learner=actor_intents_learner,
                            value_net=value_net_def, config=config,
-                           #agent_intent_cb=agent_intent_cb,
                            actor_learner=actor_learner)
     
 def evaluate_with_trajectories_gotil(env, actor, num_episodes, base_observation, seed):
@@ -230,36 +225,3 @@ def evaluate_with_trajectories_gotil(env, actor, num_episodes, base_observation,
                 total_reward += r
         returns.append(total_reward)
     return np.asarray(returns).mean()
-        
-# def value_loss(value_net, value_target, batch, config):
-#     (next_v1, next_v2) = eval_value_ensemble(value_target, batch['next_observations'], batch['icvf_desired_goals'])
-#     next_v = jnp.minimum(next_v1, next_v2)
-#     q = batch['icvf_rewards'] + config['discount'] * batch['icvf_masks'] * next_v
-    
-#     (v1_t, v2_t) = eval_value_ensemble(value_target, batch['observations'], batch['icvf_desired_goals'])
-#     v_t = (v1_t + v2_t) / 2
-#     adv = q - v_t
-    
-#     q1 = batch['rewards'] + config['discount'] * batch['icvf_masks'] * next_v1
-#     q2 = batch['rewards'] + config['discount'] * batch['icvf_masks'] * next_v2
-#     (v1, v2) = eval_value_ensemble(value_net, batch['observations'], batch['icvf_desired_goals'])
-#     value_loss1 = expectile_loss(adv, q1 - v1, config['expectile']).mean()
-#     value_loss2 = expectile_loss(adv, q2 - v2, config['expectile']).mean()
-#     value_loss = value_loss1 + value_loss2
-#     advantage = adv
-    
-#     return value_loss, {
-#         'Gotil_value_loss': value_loss,
-#         'Gotil_abs adv mean': jnp.abs(advantage).mean(),
-#         'Gotil_adv mean': advantage.mean(),
-#         'Gotil_adv max': advantage.max(),
-#         'Gotil_adv min': advantage.min(),
-#         'Gotil_accept prob': (advantage >= 0).mean(),
-#     }
-
-# @eqx.filter_jit
-# def gotil_value_update(value_net, batch, config):
-#     (val, value_aux), v_grads = eqx.filter_value_and_grad(value_loss, has_aux=True)(value_net.model, value_net.target_model, batch, config)
-#     updated_v_learner = value_net.apply_updates(v_grads)
-#     updated_v_target = updated_v_learner.soft_update()
-#     return dataclasses.replace(value_net, model=updated_v_learner, target_model=updated_v_target), value_aux
