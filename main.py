@@ -67,7 +67,7 @@ def get_debug_statistics_icvf(agent, batch):
         if agent.config['no_intent']:
             return agent.value(s, g, jnp.ones_like(z), method='get_info')
         else:
-            return eval_ensemble(agent.value_learner.model, s, g, z)
+            return eval_ensemble(agent.value_learner.model, s, g, z, None)
     s = batch['observations']
     g = batch['icvf_goals']
     z = batch['icvf_desired_goals']
@@ -352,6 +352,7 @@ def main(config: DictConfig):
             agent_dataset_batch = agent_gc_dataset.sample(config.batch_size, mode=config.algo.algo_name)
             agent, update_info, rng = agent.pretrain_agent(agent_dataset_batch, rng)
             print(update_info)
+            
         elif config.algo.algo_name == "hiql":
             agent, update_info = supply_rng(agent.pretrain_update)(pretrain_batch)
         else:

@@ -43,31 +43,24 @@ class JointGotilAgent(eqx.Module):
         return dataclasses.replace(self, expert_icvf=agent), update_info
     
     def pretrain_agent(self, pretrain_batch, seed):
-        rng, intents_sample = jax.random.split(seed, 2)
-        aux = {}
-        #value_net, value_info = gotil_value_update(self.value_net, pretrain_batch, self.config) # V(s, z)
+        rng, sample_key = jax.random.split(seed, 2)
+        
+        # Sample intents from current obs
+        intents = eqx.filter_vmap(self.actor_intents_learner.model)(pretrain_batch['observations']).sample(seed=sample_key)
+        # Update actor
+        updated_actor, aux_info = update_actor(self.actor_learner, pretrain_batch, self.value_net, intents)
+        # Update ICVF using V(s, z) as advantage
+        agent, agent_gotil_info = update(self.agent_icvf, pretrain_batch, intents, mode="gotil")
+        # Update usual ICVF
+        agent, agent_icvf_info = update(agent, pretrain_batch)
         #agent_updated_codebook, agent_updated_v, ot_info = update_ot(self.expert_icvf, self.value_net, pretrain_batch, self.agent_intent_cb) # update codebook and V by OT
-        updated_actor, intents, aux_info = update_actors(self.actor_intents_learner, self.actor_learner, pretrain_batch, self.value_net, intents_sample)
-        agent, agent_icvf_info = update(self.agent_icvf, pretrain_batch, intents, mode="gotil")
+        
+        aux =defaultdict()
         aux.update(aux_info)
         return dataclasses.replace(self, agent_icvf=agent, actor_learner=updated_actor), aux_info, rng
 
 @eqx.filter_jit
-def update_actors(actor_intents_learner, actor_learner, batch, agent_value, seed):
-    # Update high-level actor, which outputs intentions based on state
-    # def intention_actor_loss(actor_intents_learner, intents):
-    #     v1_a, v2_a = eval_value_ensemble(agent_value.model, batch['observations'], intents) # V(s, z)
-    #     v = (v1_a + v2_a) / 2.0
-    #     exp_a = jax.nn.softplus(v)
-    #     dist = eqx.filter_vmap(actor_intents_learner)(batch['next_observations'])
-    #     log_probs_intents = dist.log_prob(intents)
-    #     actor_intents_loss = -(exp_a * log_probs_intents).mean()
-        
-    #     return actor_intents_loss, {
-    #         'high_actor_loss': actor_intents_loss,
-    #         'high_v': v.mean(),
-    # }
-
+def update_actor(actor_learner, batch, agent_value, intents):
     def actor_loss(actor, intents):
         v1, v2 = eval_value_ensemble(agent_value.model, batch['observations'], intents)
         nv1, nv2 = eval_value_ensemble(agent_value.model, batch['next_observations'], intents)
@@ -78,7 +71,7 @@ def update_actors(actor_intents_learner, actor_learner, batch, agent_value, seed
         exp_a = jnp.exp(adv * 5.0)
         exp_a = jnp.minimum(exp_a, 100.0).squeeze()
         dist = eqx.filter_vmap(actor)(batch['observations'], intents)
-        log_probs = dist.log_prob(batch['actions'])
+        log_probs = dist.log_prob(batch['actions']) # here - actions from agent dataset
         actor_loss = -(exp_a * log_probs).mean()
 
         return actor_loss, {
@@ -86,20 +79,14 @@ def update_actors(actor_intents_learner, actor_learner, batch, agent_value, seed
             'adv': adv.mean(),
         }
     
-    rng, intents_sample1, intents_sample2 = jax.random.split(seed, 3)
     aux_info = defaultdict()
-    
-    intents = eqx.filter_vmap(actor_intents_learner.model)(batch['observations']).sample(seed=intents_sample2) #.mean()
-    #(val_intents_actor, aux_intents), actor_intents_grads = eqx.filter_value_and_grad(intention_actor_loss, has_aux=True)(actor_intents_learner.model, intents=intents)
-    #updated_actor_intents = actor_intents_learner.apply_updates(actor_intents_grads)
-    
-    (val_actor, aux_actor), actor_grads = eqx.filter_value_and_grad(actor_loss, has_aux=True)(actor_learner.model, intents)
+    (loss_actor, aux_actor), actor_grads = eqx.filter_value_and_grad(actor_loss, has_aux=True)(actor_learner.model, intents)
     updated_actor = actor_learner.apply_updates(actor_grads)
     
     aux_info.update({"Low Level Actor": aux_actor})
     return updated_actor, intents, aux_info
     
-def expectile_loss(adv, diff, expectile=0.7):
+def expectile_loss(adv, diff, expectile=0.85):
     weight = jnp.where(adv >= 0, expectile, (1 - expectile))
     return weight * (diff**2)
 
