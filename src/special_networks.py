@@ -129,6 +129,7 @@ class MultilinearVF_EQX(eqx.Module):
     matrix_a: eqx.Module
     matrix_b: eqx.Module
     gotil_psi: Any = None
+    mode: str = None
     
     def __init__(self, key, state_dim, hidden_dims, pretrained_phi=None, mode=None):
         key, phi_key, psi_key, t_key, matrix_a_key, matrix_b_key, gotil_mlp_key = jax.random.split(key, 7)
@@ -137,8 +138,9 @@ class MultilinearVF_EQX(eqx.Module):
                                         final_activation=jax.nn.relu)
         if mode is not None:  # !!!
             self.gotil_psi = eqxnn.MLP(
-            in_size=state_dim + hidden_dims[-1], out_size=hidden_dims[-1], width_size=hidden_dims[-1], depth=len(hidden_dims), key=gotil_mlp_key, final_activation=jax.nn.tanh
+            in_size=hidden_dims[-1], out_size=hidden_dims[-1], width_size=hidden_dims[-1], depth=len(hidden_dims), key=gotil_mlp_key, final_activation=jax.nn.tanh
         )
+            self.mode = mode
         if pretrained_phi is None:
             self.phi_net = network_cls(key=phi_key)
         else:
@@ -150,8 +152,8 @@ class MultilinearVF_EQX(eqx.Module):
         self.matrix_a = eqxnn.Linear(in_features=hidden_dims[-1], out_features=hidden_dims[-1], key=matrix_a_key)
         self.matrix_b = eqxnn.Linear(in_features=hidden_dims[-1], out_features=hidden_dims[-1], key=matrix_b_key)
         
-    def __call__(self, observations, outcomes, intents, mode=None):
-        if mode is None:
+    def __call__(self, observations, outcomes, intents):
+        if self.mode is None:
             phi = self.phi_net(observations)
             psi = self.psi_net(outcomes)
             z = self.psi_net(intents)
@@ -163,12 +165,10 @@ class MultilinearVF_EQX(eqx.Module):
         else:
             #here we ignore outcomes
             phi = jax.lax.stop_gradient(self.phi_net(observations))
-            psi = self.gotil_psi(observations, intents)
             Tz = jax.lax.stop_gradient(self.T_net(intents))
-            
             phi_z = self.matrix_a(Tz * phi)
-            psi_z = self.matrix_b(Tz * psi)
-            v = (phi_z * psi_z).sum(axis=-1)
+            psi = self.gotil_psi(phi_z)
+            v = (phi_z).sum(axis=-1)
         return v
 
 def get_rep(

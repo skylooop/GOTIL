@@ -24,37 +24,33 @@ def icvf_loss(value_fn, target_value_fn, batch, config, intents=None, mode=None)
     # Compute TD error for outcome s_+
     # 1(s == s_+) + V(s', s_+, z) - V(s, s_+, z)
     ###
-
-    (next_v1_gz, next_v2_gz) = eval_ensemble(target_value_fn, batch['next_observations'], batch['icvf_goals'], batch['icvf_desired_goals'])
+    if intents is None:
+        intents = batch['icvf_desired_goals']
+        # if mode is gotil, then middle argument is not used
+    (next_v1_gz, next_v2_gz) = eval_ensemble(target_value_fn, batch['next_observations'], batch['icvf_goals'], intents)
     q1_gz = batch['icvf_rewards'] + config['discount'] * batch['icvf_masks'] * next_v1_gz
     q2_gz = batch['icvf_rewards'] + config['discount'] * batch['icvf_masks'] * next_v2_gz
     q1_gz, q2_gz = jax.lax.stop_gradient(q1_gz), jax.lax.stop_gradient(q2_gz)
 
-    (v1_gz, v2_gz) = eval_ensemble(value_fn, batch['observations'], batch['icvf_goals'], batch['icvf_desired_goals'])
+    (v1_gz, v2_gz) = eval_ensemble(value_fn, batch['observations'], batch['icvf_goals'], intents)
 
     ###
     # Compute the advantage of s -> s' under z
     # r(s, z) + V(s', z, z) - V(s, z, z)
     ###
-    (next_v1_zz, next_v2_zz) = eval_ensemble(target_value_fn, batch['next_observations'], batch['icvf_desired_goals'], batch['icvf_desired_goals'])
+    (next_v1_zz, next_v2_zz) = eval_ensemble(target_value_fn, batch['next_observations'], batch['icvf_desired_goals'], intents)
     if config['min_q']:
         next_v_zz = jnp.minimum(next_v1_zz, next_v2_zz)
     else:
         next_v_zz = (next_v1_zz + next_v2_zz) / 2.
     
     q_zz = batch['icvf_desired_rewards'] + config['discount'] * batch['icvf_desired_masks'] * next_v_zz
-    (v1_zz, v2_zz) = eval_ensemble(target_value_fn, batch['observations'], batch['icvf_desired_goals'], batch['icvf_desired_goals'])
+    (v1_zz, v2_zz) = eval_ensemble(target_value_fn, batch['observations'], batch['icvf_desired_goals'], intents)
     v_zz = (v1_zz + v2_zz) / 2.
     
     if mode is None:
         adv = q_zz - v_zz
     else:
-        eval_ensemble_gotil = functools.partial(eval_ensemble, mode=mode)
-        (next_v1_zz, next_v2_zz) = eval_ensemble_gotil(target_value_fn, batch['next_observations'], batch['icvf_desired_goals'], intents)
-        next_v_zz = (next_v1_zz + next_v2_zz) / 2.
-        (v1_zz, v2_zz) = eval_ensemble_gotil(target_value_fn, batch['observations'], batch['icvf_desired_goals'], intents)
-        v_zz = (v1_zz + v2_zz) / 2.
-        
         adv = next_v_zz - v_zz
         
     value_loss1 = expectile_loss(adv, q1_gz-v1_gz, config['expectile']).mean()
@@ -87,9 +83,9 @@ class ICVF_EQX_Agent(eqx.Module):
     value_learner: TrainTargetStateEQX
     config: dict
  
-@eqx.filter_vmap(in_axes=dict(ensemble=eqx.if_array(0), s=None, g=None, z=None, mode=None), out_axes=0)
-def eval_ensemble(ensemble, s, g, z, mode=None):
-    return eqx.filter_vmap(ensemble)(s, g, z, mode)
+@eqx.filter_vmap(in_axes=dict(ensemble=eqx.if_array(0), s=None, g=None, z=None), out_axes=0)
+def eval_ensemble(ensemble, s, g, z):
+    return eqx.filter_vmap(ensemble)(s, g, z)
 
 @eqx.filter_jit
 def update(agent, batch, intents=None, mode=None):
