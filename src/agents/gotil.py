@@ -74,6 +74,7 @@ def update_actor(actor_learner, batch, agent_value, intents):
         adv = nv - v
         exp_a = jnp.exp(adv * 5.0)
         exp_a = jnp.minimum(exp_a, 100.0).squeeze()
+        # Take s, z as input -> action
         dist = eqx.filter_vmap(actor)(batch['observations'], intents)
         log_probs = dist.log_prob(batch['actions']) # here - actions from agent dataset
         actor_loss = -(exp_a * log_probs).mean()
@@ -106,16 +107,12 @@ def sink_div(combined_agent, states, expert_intents, marginal_expert, key) -> tu
     agent_value, agent_policy = combined_agent
     intents_dist = eqx.filter_vmap(agent_policy)(states)
     intents, log_prob = intents_dist.sample_and_log_prob(seed=key)
-
+    log_prob = jax.lax.stop_gradient(log_prob)
     geom = pointcloud.PointCloud(intents, expert_intents, epsilon=0.001)
     
     a1, a2 = eval_value_ensemble(agent_value, states, intents).squeeze()
     an = jax.nn.softplus(a1 - jnp.quantile(a1, 0.01)) 
     bn = jax.nn.softplus(marginal_expert - jnp.quantile(marginal_expert, 0.01))
-  
-    adv = jax.lax.stop_gradient(a1 - jnp.quantile(a1, 0.1))
-    policy_loss = -(log_prob.squeeze() * adv).mean() 
-            
     an = a1 / a1.sum()
     bn = bn / bn.sum()
     ot = sinkhorn_divergence.sinkhorn_divergence(
@@ -132,7 +129,7 @@ def sink_div(combined_agent, states, expert_intents, marginal_expert, key) -> tu
             "max_iterations": 2000
         },
     )
-    return ot.divergence * 10 + policy_loss, ((-log_prob.squeeze()).min(), intents)
+    return ot.divergence * 10, ((-log_prob.squeeze()).min(), intents)
 
 def ot_update(actor_intents_learner, agent_value, batch, expert_marginals, expert_intents, key, num_iter:int=100, dump_every:int=50):
     def v_loss(agent_policy, agent_value, states) -> float:
@@ -141,8 +138,8 @@ def ot_update(actor_intents_learner, agent_value, batch, expert_marginals, exper
         v = eval_value_ensemble(agent_value, states, z).squeeze()
         return -v.mean() * 0.1
     
-    cost_fn_vg = eqx.filter_jit(eqx.filter_value_and_grad(sink_div, has_aux=True))
-    v_loss_vg = eqx.filter_jit(eqx.filter_value_and_grad(v_loss, has_aux=False))
+    cost_fn_vg = eqx.filter_value_and_grad(sink_div, has_aux=True) #eqx.filter_jit(
+    v_loss_vg = eqx.filter_value_and_grad(v_loss, has_aux=False) #eqx.filter_jit(
     ot_info = defaultdict()
     
     for i in tqdm(range(0, num_iter + 1), desc="Computing OT"):
