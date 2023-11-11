@@ -139,7 +139,7 @@ def ot_update(actor_intents_learner, agent_value, batch, expert_marginals, exper
     ot_info = defaultdict()
     
     for i in tqdm(range(0, num_iter + 1), desc="Computing OT"):
-        (cost, pmin, intents), (value_grads, intent_policy_grads) = cost_fn_vg((agent_value.model, actor_intents_learner.model), expert_intents, expert_marginals, key)
+        (cost, pmin, intents), (value_grads, intent_policy_grads) = cost_fn_vg((agent_value.model, actor_intents_learner.model), batch['observations'], expert_intents, expert_marginals, key)
         agent_value = agent_value.apply_updates(value_grads).soft_update()
         actor_intents_learner = actor_intents_learner.apply_updates(intent_policy_grads)
         
