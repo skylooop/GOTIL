@@ -101,7 +101,7 @@ def get_values(agent, observations, intent):
     def get_v(observations, intent):
         intent = intent.reshape(1, -1)
         intent_tiled = jnp.tile(intent, (observations.shape[0], 1))
-        v1, v2 = eval_ensemble(agent.value_learner.model, observations, intent_tiled, intent_tiled)
+        v1, v2 = eval_ensemble(agent.value_learner.model, observations, intent_tiled, intent_tiled, None)
         return (v1 + v2) / 2    
     return get_v(observations, intent)
 
@@ -137,7 +137,7 @@ def make_visual(images, metrics, visualization_methods=[]):
 @eqx.filter_jit
 def get_traj_v_icvf(agent, trajectory):
     def get_v(s, g):
-        return eval_ensemble(agent.value_learner.model, s[None], g[None], g[None]).mean()
+        return eval_ensemble(agent.value_learner.model, s[None], g[None], g[None], None).mean()
     observations = trajectory['observations']
     all_values = jax.vmap(jax.vmap(get_v, in_axes=(None, 0)), in_axes=(0, None))(observations, observations)
     return {
@@ -162,7 +162,7 @@ def get_v_gz(agent, initial_state, target_goal, observations):
 
 @eqx.filter_jit
 def get_gcvalue_icvf(agent, s, g, z):
-    v_sgz_1, v_sgz_2 = eval_ensemble(agent.value_learner.model, s, g, z)
+    v_sgz_1, v_sgz_2 = eval_ensemble(agent.value_learner.model, s, g, z, None)
     return (v_sgz_1 + v_sgz_2) / 2
 
 @eqx.filter_jit
@@ -171,7 +171,7 @@ def get_policy(agent, observations, intent):
         def get_v(observations, intent):
             intent = intent.reshape(1, -1)
             intent_tiled = jnp.tile(intent, (observations.shape[0], 1))
-            v1, v2 = eval_ensemble(agent.value_learner.model, observations, intent_tiled, intent_tiled)
+            v1, v2 = eval_ensemble(agent.value_learner.model, observations, intent_tiled, intent_tiled, None)
             return (v1 + v2) / 2    
             
         return get_v(observations, intent).mean()

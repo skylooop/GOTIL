@@ -4,7 +4,7 @@ defaults:
   - _self_
   - GoalDS: gcds #null
   - Env: antmaze-umaze-diverse
-  - algo: icvf
+  - algo: gotil
   - logger: wandb
 
 seed: 42

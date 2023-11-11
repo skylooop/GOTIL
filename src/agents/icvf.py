@@ -17,21 +17,24 @@ def expectile_loss(adv, diff, expectile=0.8):
     return weight * diff ** 2
 
 def gotil_loss(value_fn, target_value_fn, batch, config, intents):
-    gotil_eval_fn = functools.partial(eval_ensemble, mode="gotil")
-    (next_v1_gz, next_v2_gz) = gotil_eval_fn(target_value_fn, batch['next_observations'], batch['icvf_goals'], intents)
+    
+    (next_v1_gz, next_v2_gz) = eval_ensemble(target_value_fn, batch['next_observations'], batch['icvf_goals'], batch['icvf_desired_goals'], None)
     q1_gz = batch['icvf_rewards'] + config['discount'] * batch['icvf_masks'] * next_v1_gz
     q2_gz = batch['icvf_rewards'] + config['discount'] * batch['icvf_masks'] * next_v2_gz
     q1_gz, q2_gz = jax.lax.stop_gradient(q1_gz), jax.lax.stop_gradient(q2_gz)
 
-    (v1_gz, v2_gz) = gotil_eval_fn(value_fn, batch['observations'], batch['icvf_goals'], intents)
-    (next_v1_zz, next_v2_zz) = gotil_eval_fn(target_value_fn, batch['next_observations'], batch['icvf_desired_goals'], intents)
+    (v1_gz, v2_gz) = eval_ensemble(target_value_fn, batch['observations'], batch['icvf_goals'], batch['icvf_desired_goals'], None)
+    v1_gz, v2_gz = jax.lax.stop_gradient(v1_gz), jax.lax.stop_gradient(v2_gz)
+    
+    (next_v1_zz, next_v2_zz) = eval_ensemble(target_value_fn, batch['next_observations'], batch['icvf_desired_goals'], intents, "gotil")
     if config['min_q']:
         next_v_zz = jnp.minimum(next_v1_zz, next_v2_zz)
     else:
         next_v_zz = (next_v1_zz + next_v2_zz) / 2.
         
-    q_zz = batch['icvf_desired_rewards'] + config['discount'] * batch['icvf_desired_masks'] * next_v_zz
-    (v1_zz, v2_zz) = gotil_eval_fn(target_value_fn, batch['observations'], batch['icvf_desired_goals'], intents)
+    #q_zz = batch['icvf_desired_rewards'] + config['discount'] * batch['icvf_desired_masks'] * next_v_zz # remove rewards?
+    q_zz = next_v_zz
+    (v1_zz, v2_zz) = eval_ensemble(value_fn, batch['observations'], batch['icvf_desired_goals'], intents, "gotil")
     v_zz = (v1_zz + v2_zz) / 2.
     
     adv = q_zz - v_zz
@@ -43,6 +46,7 @@ def gotil_loss(value_fn, target_value_fn, batch, config, intents):
     return value_loss, {
         'gotil_value_loss': value_loss,
         'gotil_abs_adv_mean': jnp.abs(advantage).mean()}
+    
     
 def icvf_loss(value_fn, target_value_fn, batch, config):
     if config['no_intent']:
@@ -127,7 +131,7 @@ def create_eqx_learner(seed: int,
                             'eps': 0.0003125
                         },
                         load_pretrained_phi: bool=False,
-                        discount: float = 0.95,
+                        discount: float = 0.99,
                         target_update_rate: float = 0.005,
                         expectile: float = 0.9,
                         no_intent: bool = False,
@@ -140,7 +144,7 @@ def create_eqx_learner(seed: int,
         rng = jax.random.PRNGKey(seed)
         
         if load_pretrained_phi:
-            network_cls = functools.partial(nn.MLP, in_size=29, out_size=hidden_dims[-1],
+            network_cls = functools.partial(nn.MLP, in_size=observations.shape[-1], out_size=hidden_dims[-1],
                                         width_size=hidden_dims[0], depth=len(hidden_dims),
                                         final_activation=jax.nn.relu)
             phi_net = network_cls(key=rng)

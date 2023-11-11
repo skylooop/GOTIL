@@ -303,6 +303,7 @@ class GaussianPolicy(eqx.Module):
                               out_size=2 * action_dim,
                               width_size=hidden_dims[0],
                               depth=len(hidden_dims),
+                              activation=jax.nn.gelu,
                               key=key_means)
         
     def __call__(self, state, intentions):
@@ -329,6 +330,7 @@ class GaussianIntentPolicy(eqx.Module):
                               out_size=intent_dim,
                               width_size=hidden_dims[0],
                               depth=len(hidden_dims),
+                              activation=jax.nn.gelu,
                               key=key_means)
         self.log_stds = jnp.zeros(shape=(intent_dim, ), dtype=jnp.float32)
         

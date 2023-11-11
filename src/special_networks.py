@@ -114,7 +114,7 @@ class MonolithicVF_EQX(eqx.Module):
     def __init__(self, key, state_dim, intents_dim, hidden_dims):
         key, mlp_key = jax.random.split(key, 2)
         self.net = eqxnn.MLP(
-            in_size=state_dim + intents_dim, out_size=1, width_size=hidden_dims[-1], depth=len(hidden_dims), key=mlp_key, final_activation=jax.nn.tanh
+            in_size=state_dim + intents_dim, out_size=1, width_size=hidden_dims[-1], depth=len(hidden_dims), key=mlp_key, activation=jax.nn.gelu
         )
         
     def __call__(self, observations, intents):
