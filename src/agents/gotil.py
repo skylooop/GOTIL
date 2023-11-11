@@ -153,10 +153,10 @@ def ot_update(actor_intents_learner, agent_value, batch, expert_marginals, exper
         actor_intents_learner = actor_intents_learner.apply_updates(intent_policy_grads)
         
         if i % dump_every == 0:
-            z = eqx.filter_vmap(actor_intents_learner.model)(intents).sample(seed=key)
+            z = eqx.filter_vmap(actor_intents_learner.model)(batch['observations']).sample(seed=key)
+            a1, a2 = eval_value_ensemble(agent_value.model, batch['observations'], z).squeeze()
             
-            a = eval_value_ensemble(agent_value.model, batch['observations'], z).squeeze()
-            an = jax.nn.softplus(a - jnp.quantile(a, 0.01))
+            an = jax.nn.softplus(a1 - jnp.quantile(a1, 0.01))
             bn = jax.nn.softplus(expert_marginals - jnp.quantile(expert_marginals, 0.01))
             an = an / an.sum()
             bn = bn / bn.sum()
