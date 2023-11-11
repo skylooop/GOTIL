@@ -109,14 +109,14 @@ def sink_div(combined_agent, states, expert_intents, marginal_expert, key) -> tu
 
     geom = pointcloud.PointCloud(intents, expert_intents, epsilon=0.001)
     
-    a = eqx.filter_vmap(agent_value)(states, intents).squeeze()
-    an = jax.nn.softplus(a - jnp.quantile(a, 0.01)) 
+    a1, a2 = eval_value_ensemble(agent_value, states, intents).squeeze()
+    an = jax.nn.softplus(a1 - jnp.quantile(a1, 0.01)) 
     bn = jax.nn.softplus(marginal_expert - jnp.quantile(marginal_expert, 0.01))
   
-    adv = jax.lax.stop_gradient(a - jnp.quantile(a, 0.1))
+    adv = jax.lax.stop_gradient(a1 - jnp.quantile(a1, 0.1))
     policy_loss = -(log_prob.squeeze() * adv).mean() 
             
-    an = an / an.sum()
+    an = a1 / a1.sum()
     bn = bn / bn.sum()
     ot = sinkhorn_divergence.sinkhorn_divergence(
         geom,
@@ -132,14 +132,23 @@ def sink_div(combined_agent, states, expert_intents, marginal_expert, key) -> tu
             "max_iterations": 2000
         },
     )
-    return ot.divergence * 10 + policy_loss, (-log_prob.squeeze()).min(), intents
+    return ot.divergence * 10 + policy_loss, ((-log_prob.squeeze()).min(), intents)
 
 def ot_update(actor_intents_learner, agent_value, batch, expert_marginals, expert_intents, key, num_iter:int=100, dump_every:int=50):
+    def v_loss(agent_policy, agent_value, states) -> float:
+        z_dist = eqx.filter_vmap(agent_policy)(states)
+        z, _ = z_dist.sample_and_log_prob(seed=key)
+        v = eval_value_ensemble(agent_value, states, z).squeeze()
+        return -v.mean() * 0.1
+    
     cost_fn_vg = eqx.filter_jit(eqx.filter_value_and_grad(sink_div, has_aux=True))
+    v_loss_vg = eqx.filter_jit(eqx.filter_value_and_grad(v_loss, has_aux=False))
     ot_info = defaultdict()
     
     for i in tqdm(range(0, num_iter + 1), desc="Computing OT"):
-        (cost, pmin, intents), (value_grads, intent_policy_grads) = cost_fn_vg((agent_value.model, actor_intents_learner.model), batch['observations'], expert_intents, expert_marginals, key)
+        (cost, (pmin, intents)), (value_grads, intent_policy_grads) = cost_fn_vg((agent_value.model, actor_intents_learner.model), batch['observations'], expert_intents, expert_marginals, key)
+        val_loss, intent_policy_grads_2 = v_loss_vg(actor_intents_learner.model, agent_value.model, batch['observations'])
+        intent_policy_grads = jax.tree_map(lambda g1, g2: g1 + g2, intent_policy_grads, intent_policy_grads_2)
         agent_value = agent_value.apply_updates(value_grads).soft_update()
         actor_intents_learner = actor_intents_learner.apply_updates(intent_policy_grads)
         
@@ -152,7 +161,7 @@ def ot_update(actor_intents_learner, agent_value, batch, expert_marginals, exper
             an = an / an.sum()
             bn = bn / bn.sum()
 
-            geom = pointcloud.PointCloud(z, y, epsilon=0.001)
+            geom = pointcloud.PointCloud(z, expert_intents, epsilon=0.001)
             diff = sinkhorn.Sinkhorn()(linear_problem.LinearProblem(geom, a = an, b = bn)).reg_ot_cost
             print(cost, diff, pmin)
             
