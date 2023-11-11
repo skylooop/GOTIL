@@ -129,7 +129,7 @@ def sink_div(combined_agent, states, expert_intents, marginal_expert, key) -> tu
             "max_iterations": 2000
         },
     )
-    return ot.divergence * 10, ((-log_prob.squeeze()).min(), intents)
+    return ot.divergence * 10, intents
 
 def ot_update(actor_intents_learner, agent_value, batch, expert_marginals, expert_intents, key, num_iter:int=100, dump_every:int=50):
     def v_loss(agent_policy, agent_value, states) -> float:
