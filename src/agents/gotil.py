@@ -31,18 +31,19 @@ class JointGotilAgent(eqx.Module):
     
     @eqx.filter_jit
     def sample_intentions(self, observation, seed):
-        dist = eqx.filter_vmap(self.actor_intents_learner)(observation)
+        dist = self.actor_intents_learner.model(observation)
         return dist.sample(seed=seed)
     
     @eqx.filter_jit
     def sample_actions(self, observations: np.array, intents: np.ndarray, seed: PRNGKey) -> jnp.ndarray:
-        dist = self.actor_learner(observations, intents).sample(seed=seed)
-        return dist
+        action = self.actor_learner.model(observations, intents).sample(seed=seed)
+        return jnp.clip(action, -1.0, 1.0)
         
     def pretrain_expert(self, pretrain_batch):
         agent, update_info = update(self.expert_icvf, pretrain_batch)
         return dataclasses.replace(self, expert_icvf=agent), update_info
     
+    @eqx.filter_jit
     def pretrain_agent(self, pretrain_batch, seed):
         rng, sample_key = jax.random.split(seed, 2)
         
@@ -108,7 +109,7 @@ def sink_div(combined_agent, states, expert_intents, marginal_expert, key) -> tu
     intents_dist = eqx.filter_vmap(agent_policy)(states)
     intents, log_prob = intents_dist.sample_and_log_prob(seed=key)
     log_prob = jax.lax.stop_gradient(log_prob)
-    geom = pointcloud.PointCloud(intents, expert_intents, epsilon=0.2)
+    geom = pointcloud.PointCloud(intents, expert_intents, epsilon=0.3)
     
     a1, a2 = eval_value_ensemble(agent_value, states, intents).squeeze()
     an = jax.nn.softplus(a1 - jnp.quantile(a1, 0.001)) 
@@ -131,7 +132,7 @@ def sink_div(combined_agent, states, expert_intents, marginal_expert, key) -> tu
     )
     return ot.divergence, intents
 
-def ot_update(actor_intents_learner, agent_value, batch, expert_marginals, expert_intents, key, num_iter:int=100, dump_every:int=50):
+def ot_update(actor_intents_learner, agent_value, batch, expert_marginals, expert_intents, key):
     def v_loss(agent_policy, agent_value, states) -> float:
         z_dist = eqx.filter_vmap(agent_policy)(states)
         z, _ = z_dist.sample_and_log_prob(seed=key)
@@ -143,26 +144,24 @@ def ot_update(actor_intents_learner, agent_value, batch, expert_marginals, exper
     ot_info = defaultdict()
     ot_info['diff'] = 0.0
     
-    for i in tqdm(range(0, num_iter + 1), desc="Computing OT"):
-        (cost, pmin), (value_grads, intent_policy_grads) = cost_fn_vg((agent_value.model, actor_intents_learner.model), batch['observations'], expert_intents, expert_marginals, key)
-        val_loss, intent_policy_grads_2 = v_loss_vg(actor_intents_learner.model, agent_value.model, batch['observations'])
-        intent_policy_grads = jax.tree_map(lambda g1, g2: g1 + g2, intent_policy_grads, intent_policy_grads_2)
-        agent_value = agent_value.apply_updates(value_grads).soft_update()
-        actor_intents_learner = actor_intents_learner.apply_updates(intent_policy_grads)
-        
-        if i % dump_every == 0:
-            z = eqx.filter_vmap(actor_intents_learner.model)(batch['observations']).sample(seed=key)
-            a1, a2 = eval_value_ensemble(agent_value.model, batch['observations'], z).squeeze()
-            
-            an = jax.nn.softplus(a1 - jnp.quantile(a1, 0.01))
-            bn = jax.nn.softplus(expert_marginals - jnp.quantile(expert_marginals, 0.01))
-            an = an / an.sum()
-            bn = bn / bn.sum()
+    (cost, pmin), (value_grads, intent_policy_grads) = cost_fn_vg((agent_value.model, actor_intents_learner.model), batch['observations'], expert_intents, expert_marginals, key)
+    val_loss, intent_policy_grads_2 = v_loss_vg(actor_intents_learner.model, agent_value.model, batch['observations'])
+    intent_policy_grads = jax.tree_map(lambda g1, g2: g1 + g2, intent_policy_grads, intent_policy_grads_2)
+    agent_value = agent_value.apply_updates(value_grads).soft_update()
+    actor_intents_learner = actor_intents_learner.apply_updates(intent_policy_grads)
+    
+    z = eqx.filter_vmap(actor_intents_learner.model)(batch['observations']).sample(seed=key)
+    a1, a2 = eval_value_ensemble(agent_value.model, batch['observations'], z).squeeze()
+    
+    an = jax.nn.softplus(a1 - jnp.quantile(a1, 0.01))
+    bn = jax.nn.softplus(expert_marginals - jnp.quantile(expert_marginals, 0.01))
+    an = an / an.sum()
+    bn = bn / bn.sum()
 
-            geom = pointcloud.PointCloud(z, expert_intents, epsilon=0.001)
-            diff = sinkhorn.Sinkhorn()(linear_problem.LinearProblem(geom, a = an, b = bn)).reg_ot_cost
-            ot_info['diff'] += diff
-            
+    geom = pointcloud.PointCloud(z, expert_intents, epsilon=0.001)
+    diff = sinkhorn.Sinkhorn()(linear_problem.LinearProblem(geom, a = an, b = bn)).reg_ot_cost
+    ot_info['diff'] += diff
+        
     return agent_value, actor_intents_learner, ot_info
     
 def create_eqx_learner(seed: int,
@@ -237,7 +236,8 @@ def evaluate_with_trajectories_gotil(env, actor, num_episodes, base_observation,
         while not done:
             rng, sampling_rng = jax.random.split(rng, 2)
             intent = actor.sample_intentions(observation, sampling_rng)
-            action = actor.sample_action(observation, intent, sampling_rng)
+            action = actor.sample_actions(observation, intent, sampling_rng)
+            print(action)
             if 'antmaze' in env.spec.id.lower():
                 next_observation, r, done, info = env.step(jax.device_get(action))
                 if r != 0:

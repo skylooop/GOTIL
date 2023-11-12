@@ -395,9 +395,10 @@ def main(config: DictConfig):
             
             if config.algo.algo_name == "gotil":
                 base_observation = jax.tree_map(lambda arr: arr[0], gc_dataset.dataset['observations'])
-                returns = evaluate_with_trajectories_gotil(env=env, actor=agent.actor_learner.model, 
+                returns = evaluate_with_trajectories_gotil(env=env, actor=agent, 
                                                            num_episodes=config.eval_episodes, base_observation=base_observation,
                                                            seed=rng)
+                print(returns)
                 wandb.log({'Eval Returns': returns}, step=i)
                 
         if i % config.eval_interval == 0 and config.algo.algo_name == "hiql":
