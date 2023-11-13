@@ -61,8 +61,8 @@ class JointGotilAgent(eqx.Module):
         agent_updated_v, updated_intent_actor, ot_info = ot_update(self.actor_intents_learner, self.value_net, pretrain_batch, expert_marginals1, expert_intents1, key=sample_key)
         
         aux = defaultdict()
-        #aux.update(ot_info) agent_updated_v updated_intent_actor
-        return dataclasses.replace(self, agent_icvf=agent, value_net=self.value_net, actor_intents_learner=self.actor_intents_learner, actor_learner=updated_actor), aux, rng
+        aux.update(ot_info)
+        return dataclasses.replace(self, agent_icvf=agent, value_net=agent_updated_v, actor_intents_learner=updated_intent_actor, actor_learner=updated_actor), aux, rng
 
 @eqx.filter_jit
 def update_actor(actor_learner, batch, agent_value, intents):
@@ -109,7 +109,7 @@ def sink_div(combined_agent, states, expert_intents, marginal_expert, key) -> tu
     intents_dist = eqx.filter_vmap(agent_policy)(states)
     intents, log_prob = intents_dist.sample_and_log_prob(seed=key)
     log_prob = jax.lax.stop_gradient(log_prob)
-    geom = pointcloud.PointCloud(intents, expert_intents, epsilon=0.3)
+    geom = pointcloud.PointCloud(intents, expert_intents, epsilon=0.001)
     
     a1, a2 = eval_value_ensemble(agent_value, states, intents).squeeze()
     an = jax.nn.softplus(a1 - jnp.quantile(a1, 0.001)) 
