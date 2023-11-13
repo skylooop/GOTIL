@@ -17,15 +17,16 @@ def expectile_loss(adv, diff, expectile=0.8):
     return weight * diff ** 2
 
 def gotil_loss(value_fn, target_value_fn, batch, config, intents):
-    
-    (next_v1_gz, next_v2_gz) = eval_ensemble(target_value_fn, batch['next_observations'], batch['icvf_goals'], intents, "gotil")
+    # from icvf
+    (next_v1_gz, next_v2_gz) = eval_ensemble(target_value_fn, batch['next_observations'], batch['icvf_goals'], batch['icvf_desired_goals'], None)
     q1_gz = batch['icvf_rewards'] + config['discount'] * batch['icvf_masks'] * next_v1_gz
     q2_gz = batch['icvf_rewards'] + config['discount'] * batch['icvf_masks'] * next_v2_gz
     q1_gz, q2_gz = jax.lax.stop_gradient(q1_gz), jax.lax.stop_gradient(q2_gz)
 
-    (v1_gz, v2_gz) = eval_ensemble(value_fn, batch['observations'], batch['icvf_goals'], intents, "gotil")
+    (v1_gz, v2_gz) = eval_ensemble(value_fn, batch['observations'], batch['icvf_goals'], batch['icvf_desired_goals'], None)
+    v1_gz, q2_gz = jax.lax.stop_gradient(v1_gz), jax.lax.stop_gradient(v2_gz)
     
-    (next_v1_zz, next_v2_zz) = eval_ensemble(target_value_fn, batch['next_observations'], batch['icvf_desired_goals'], intents, "gotil")
+    (next_v1_zz, next_v2_zz) = eval_ensemble(value_fn, batch['next_observations'], batch['icvf_desired_goals'], intents, "gotil")
     if config['min_q']:
         next_v_zz = jnp.minimum(next_v1_zz, next_v2_zz)
     else:
@@ -113,6 +114,11 @@ def eval_ensemble(ensemble, s, g, z, mode):
 
 @eqx.filter_jit
 def update(agent, batch, intents=None, mode=None):
+    # cond = mode is None
+    # (val, value_aux), v_grads = jax.lax.cond(cond,
+    #                                          eqx.filter_value_and_grad(icvf_loss, has_aux=True),
+    #                                          eqx.filter_value_and_grad(gotil_loss, has_aux=True),
+    #                                          (agent.value_learner.model, agent.value_learner.target_model, batch, agent.config, intents))
     if mode is None:
         (val, value_aux), v_grads = eqx.filter_value_and_grad(icvf_loss, has_aux=True)(agent.value_learner.model, agent.value_learner.target_model, batch, agent.config)
     else:

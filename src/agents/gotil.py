@@ -69,7 +69,7 @@ def update_actor(actor_learner, batch, agent_value, intents):
         nv = (nv1 + nv2) / 2
 
         adv = nv - v
-        exp_a = jnp.exp(adv * 5.0)
+        exp_a = jnp.exp(adv * 10.0)
         exp_a = jnp.minimum(exp_a, 100.0).squeeze()
         # Take s, z as input -> action
         dist = eqx.filter_vmap(actor)(batch['observations'], intents)
@@ -77,15 +77,13 @@ def update_actor(actor_learner, batch, agent_value, intents):
         actor_loss = -(exp_a * log_probs).mean()
 
         return actor_loss, {
-            'actor_loss': actor_loss,
-            'adv': adv.mean(),
+            'low actor_loss': actor_loss,
+            'low adv': abs(adv).mean(),
         }
     
     (loss_actor, aux_actor), actor_grads = eqx.filter_value_and_grad(actor_loss, has_aux=True)(actor_learner.model, intents)
     updated_actor = actor_learner.apply_updates(actor_grads)
-    
-    aux_info = {"Low Level Actor": aux_actor}
-    return updated_actor, aux_info
+    return updated_actor, aux_actor
     
 def expectile_loss(adv, diff, expectile=0.85):
     weight = jnp.where(adv >= 0, expectile, (1 - expectile))
@@ -211,9 +209,8 @@ def create_eqx_learner(seed: int,
     
 def evaluate_with_trajectories_gotil(env, actor, num_episodes, base_observation, seed):
     seed, rng = jax.random.split(seed, 2)
-    trajectories = []
-    stats = defaultdict(list)
-
+    renders = []
+    
     returns = []
     for i in range(num_episodes):
         if 'antmaze' in env.spec.id.lower():
@@ -222,18 +219,18 @@ def evaluate_with_trajectories_gotil(env, actor, num_episodes, base_observation,
             obs_goal = base_observation.copy()
             obs_goal[:2] = goal
             
-        trajectory = defaultdict(list)
         observation, done = env.reset(), False
         total_reward = 0.0
         while not done:
             rng, sampling_rng = jax.random.split(rng, 2)
             intent = actor.sample_intentions(observation, sampling_rng)
             action = actor.sample_actions(observation, intent, sampling_rng)
-            print(action)
             if 'antmaze' in env.spec.id.lower():
                 next_observation, r, done, info = env.step(jax.device_get(action))
+                cur_frame = env.render("rgb_array").transpose(2, 0, 1).copy()
+                renders.append(cur_frame)
                 if r != 0:
                     print("Success")
                 total_reward += r
         returns.append(total_reward)
-    return np.asarray(returns).mean()
+    return np.asarray(returns).mean(), renders
