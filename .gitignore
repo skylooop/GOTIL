@@ -1,11 +1,12 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
+.vscode
 *.py[cod]
 *$py.class
 wandb/
-# C extensions
+
 *.so
-wandb/
+*.TXT
 *.npz
 *.png
 *.TXT

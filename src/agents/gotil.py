@@ -56,13 +56,13 @@ class JointGotilAgent(eqx.Module):
         # Update usual ICVF
         agent, agent_icvf_info = update(agent, pretrain_batch)
         # Update intents of actor using OT
-        expert_intents1, expert_intents2 = get_expert_intents(self.expert_icvf.value_learner.model.psi_net, pretrain_batch['icvf_desired_goals'])
-        expert_marginals1, expert_marginals2 = eval_ensemble(self.expert_icvf.value_learner.model, pretrain_batch['next_observations'], pretrain_batch['icvf_desired_goals'], pretrain_batch['icvf_desired_goals'], None)
+        expert_intents1, expert_intents2 = eqx.filter_jit(get_expert_intents)(self.expert_icvf.value_learner.model.psi_net, pretrain_batch['icvf_desired_goals'])
+        expert_marginals1, expert_marginals2 = eqx.filter_jit(eval_ensemble)(self.expert_icvf.value_learner.model, pretrain_batch['next_observations'], pretrain_batch['icvf_desired_goals'], pretrain_batch['icvf_desired_goals'], None)
         agent_updated_v, updated_intent_actor, ot_info = ot_update(self.actor_intents_learner, self.value_net, pretrain_batch, expert_marginals1, expert_intents1, key=sample_key)
         
         aux = defaultdict()
-        aux.update(ot_info)
-        return dataclasses.replace(self, agent_icvf=agent, value_net=agent_updated_v, actor_intents_learner=updated_intent_actor, actor_learner=updated_actor), aux, rng
+        #aux.update(ot_info) agent_updated_v updated_intent_actor
+        return dataclasses.replace(self, agent_icvf=agent, value_net=self.value_net, actor_intents_learner=self.actor_intents_learner, actor_learner=updated_actor), aux, rng
 
 @eqx.filter_jit
 def update_actor(actor_learner, batch, agent_value, intents):
@@ -132,6 +132,7 @@ def sink_div(combined_agent, states, expert_intents, marginal_expert, key) -> tu
     )
     return ot.divergence, intents
 
+@eqx.filter_jit
 def ot_update(actor_intents_learner, agent_value, batch, expert_marginals, expert_intents, key):
     def v_loss(agent_policy, agent_value, states) -> float:
         z_dist = eqx.filter_vmap(agent_policy)(states)
