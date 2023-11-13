@@ -146,13 +146,13 @@ def ot_update(actor_intents_learner, agent_value, batch, expert_marginals, exper
     z = eqx.filter_vmap(actor_intents_learner.model)(batch['observations']).sample(seed=key)
     a1, a2 = eval_value_ensemble(agent_value.model, batch['observations'], z).squeeze()
     
-    an = jax.nn.softplus(a1 - jnp.quantile(a1, 0.01))
-    bn = jax.nn.softplus(expert_marginals - jnp.quantile(expert_marginals, 0.01))
+    an = jax.nn.softplus(a1 - jnp.quantile(a1, 0.001))
+    bn = jax.nn.softplus(expert_marginals - jnp.quantile(expert_marginals, 0.001))
     an = an / an.sum()
     bn = bn / bn.sum()
 
-    geom = pointcloud.PointCloud(z, expert_intents, epsilon=0.001)
-    diff = sinkhorn.Sinkhorn()(linear_problem.LinearProblem(geom, a = an, b = bn)).reg_ot_cost
+    # geom = pointcloud.PointCloud(z, expert_intents, epsilon=0.001)
+    # diff = sinkhorn.Sinkhorn()(linear_problem.LinearProblem(geom, a = an, b = bn)).reg_ot_cost
     ot_info = {"OT diff": cost}
     return agent_value, actor_intents_learner, ot_info
     

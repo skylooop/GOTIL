@@ -18,13 +18,12 @@ def expectile_loss(adv, diff, expectile=0.8):
 
 def gotil_loss(value_fn, target_value_fn, batch, config, intents):
     
-    (next_v1_gz, next_v2_gz) = eval_ensemble(target_value_fn, batch['next_observations'], batch['icvf_goals'], batch['icvf_desired_goals'], None)
+    (next_v1_gz, next_v2_gz) = eval_ensemble(target_value_fn, batch['next_observations'], batch['icvf_goals'], intents, "gotil")
     q1_gz = batch['icvf_rewards'] + config['discount'] * batch['icvf_masks'] * next_v1_gz
     q2_gz = batch['icvf_rewards'] + config['discount'] * batch['icvf_masks'] * next_v2_gz
     q1_gz, q2_gz = jax.lax.stop_gradient(q1_gz), jax.lax.stop_gradient(q2_gz)
 
-    (v1_gz, v2_gz) = eval_ensemble(target_value_fn, batch['observations'], batch['icvf_goals'], batch['icvf_desired_goals'], None)
-    v1_gz, v2_gz = jax.lax.stop_gradient(v1_gz), jax.lax.stop_gradient(v2_gz)
+    (v1_gz, v2_gz) = eval_ensemble(value_fn, batch['observations'], batch['icvf_goals'], intents, "gotil")
     
     (next_v1_zz, next_v2_zz) = eval_ensemble(target_value_fn, batch['next_observations'], batch['icvf_desired_goals'], intents, "gotil")
     if config['min_q']:
@@ -32,7 +31,6 @@ def gotil_loss(value_fn, target_value_fn, batch, config, intents):
     else:
         next_v_zz = (next_v1_zz + next_v2_zz) / 2.
         
-    #q_zz = batch['icvf_desired_rewards'] + config['discount'] * batch['icvf_desired_masks'] * next_v_zz # remove rewards?
     q_zz = next_v_zz
     (v1_zz, v2_zz) = eval_ensemble(value_fn, batch['observations'], batch['icvf_desired_goals'], intents, "gotil")
     v_zz = (v1_zz + v2_zz) / 2.
