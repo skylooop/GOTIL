@@ -56,10 +56,9 @@ class JointGotilAgent(eqx.Module):
         # Update intents of actor using OT
         expert_intents1, expert_intents2 = eqx.filter_jit(get_expert_intents)(self.expert_icvf.value_learner.model.psi_net, pretrain_batch['icvf_desired_goals'])
         expert_marginals1, expert_marginals2 = eqx.filter_jit(eval_ensemble)(self.expert_icvf.value_learner.model, pretrain_batch['next_observations'], pretrain_batch['icvf_desired_goals'], pretrain_batch['icvf_desired_goals'], None)
-        agent_updated_v, updated_intent_actor, ot_info = ot_update(self.actor_intents_learner, self.value_net, pretrain_batch, expert_marginals1, expert_intents1, key=seed)
+        agent_updated_v, updated_intent_actor, ot_info = eqx.filter_jit(ot_update)(self.actor_intents_learner, self.value_net, pretrain_batch, expert_marginals1, expert_intents1, key=seed)
 
-        aux = defaultdict()
-        return dataclasses.replace(self, agent_icvf=agent, value_net=agent_updated_v, actor_intents_learner=updated_intent_actor, actor_learner=updated_actor), aux
+        return dataclasses.replace(self, agent_icvf=agent, value_net=agent_updated_v, actor_intents_learner=updated_intent_actor, actor_learner=updated_actor), ot_info
 
 @eqx.filter_jit
 def update_actor(actor_learner, batch, agent_value, intents):
@@ -82,11 +81,10 @@ def update_actor(actor_learner, batch, agent_value, intents):
             'adv': adv.mean(),
         }
     
-    aux_info = defaultdict()
     (loss_actor, aux_actor), actor_grads = eqx.filter_value_and_grad(actor_loss, has_aux=True)(actor_learner.model, intents)
     updated_actor = actor_learner.apply_updates(actor_grads)
     
-    aux_info.update({"Low Level Actor": aux_actor})
+    aux_info = {"Low Level Actor": aux_actor}
     return updated_actor, aux_info
     
 def expectile_loss(adv, diff, expectile=0.85):
@@ -129,7 +127,6 @@ def sink_div(combined_agent, states, expert_intents, marginal_expert, key) -> tu
     )
     return ot.divergence, intents
 
-@eqx.filter_jit
 def ot_update(actor_intents_learner, agent_value, batch, expert_marginals, expert_intents, key):
     def v_loss(agent_policy, agent_value, states) -> float:
         z_dist = eqx.filter_vmap(agent_policy)(states)
@@ -139,8 +136,6 @@ def ot_update(actor_intents_learner, agent_value, batch, expert_marginals, exper
     
     cost_fn_vg = eqx.filter_jit(eqx.filter_value_and_grad(sink_div, has_aux=True))
     v_loss_vg = eqx.filter_jit(eqx.filter_value_and_grad(v_loss, has_aux=False))
-    ot_info = defaultdict()
-    ot_info['diff'] = 0.0
     
     (cost, pmin), (value_grads, intent_policy_grads) = cost_fn_vg((agent_value.model, actor_intents_learner.model), batch['observations'], expert_intents, expert_marginals, key)
     val_loss, intent_policy_grads_2 = v_loss_vg(actor_intents_learner.model, agent_value.model, batch['observations'])
@@ -158,8 +153,7 @@ def ot_update(actor_intents_learner, agent_value, batch, expert_marginals, exper
 
     geom = pointcloud.PointCloud(z, expert_intents, epsilon=0.001)
     diff = sinkhorn.Sinkhorn()(linear_problem.LinearProblem(geom, a = an, b = bn)).reg_ot_cost
-    ot_info['diff'] += diff
-        
+    ot_info = {"OT diff": cost}
     return agent_value, actor_intents_learner, ot_info
     
 def create_eqx_learner(seed: int,

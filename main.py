@@ -352,7 +352,6 @@ def main(config: DictConfig):
             expert_training_icvf = False
             agent_dataset_batch = agent_gc_dataset.sample(config.batch_size, mode=config.algo.algo_name)
             agent, update_info = agent.pretrain_agent(agent_dataset_batch, rng)
-            #print(update_info)
             
         elif config.algo.algo_name == "hiql":
             agent, update_info = supply_rng(agent.pretrain_update)(pretrain_batch)
