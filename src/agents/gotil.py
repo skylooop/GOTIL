@@ -45,10 +45,8 @@ class JointGotilAgent(eqx.Module):
     
     @eqx.filter_jit
     def pretrain_agent(self, pretrain_batch, seed):
-        rng, sample_key = jax.random.split(seed, 2)
-        
         # Sample intents from current obs
-        intents = eqx.filter_vmap(self.actor_intents_learner.model)(pretrain_batch['observations']).sample(seed=sample_key)
+        intents = eqx.filter_vmap(self.actor_intents_learner.model)(pretrain_batch['observations']).sample(seed=seed)
         # Update actor
         updated_actor, aux_info = update_actor(self.actor_learner, pretrain_batch, self.value_net, intents)
         # Update ICVF using V(s, z) as advantage
@@ -58,11 +56,10 @@ class JointGotilAgent(eqx.Module):
         # Update intents of actor using OT
         expert_intents1, expert_intents2 = eqx.filter_jit(get_expert_intents)(self.expert_icvf.value_learner.model.psi_net, pretrain_batch['icvf_desired_goals'])
         expert_marginals1, expert_marginals2 = eqx.filter_jit(eval_ensemble)(self.expert_icvf.value_learner.model, pretrain_batch['next_observations'], pretrain_batch['icvf_desired_goals'], pretrain_batch['icvf_desired_goals'], None)
-        agent_updated_v, updated_intent_actor, ot_info = ot_update(self.actor_intents_learner, self.value_net, pretrain_batch, expert_marginals1, expert_intents1, key=sample_key)
-        
+        agent_updated_v, updated_intent_actor, ot_info = ot_update(self.actor_intents_learner, self.value_net, pretrain_batch, expert_marginals1, expert_intents1, key=seed)
+
         aux = defaultdict()
-        aux.update(ot_info)
-        return dataclasses.replace(self, agent_icvf=agent, value_net=agent_updated_v, actor_intents_learner=updated_intent_actor, actor_learner=updated_actor), aux, rng
+        return dataclasses.replace(self, agent_icvf=agent, value_net=agent_updated_v, actor_intents_learner=updated_intent_actor, actor_learner=updated_actor), aux
 
 @eqx.filter_jit
 def update_actor(actor_learner, batch, agent_value, intents):
@@ -109,7 +106,7 @@ def sink_div(combined_agent, states, expert_intents, marginal_expert, key) -> tu
     intents_dist = eqx.filter_vmap(agent_policy)(states)
     intents, log_prob = intents_dist.sample_and_log_prob(seed=key)
     log_prob = jax.lax.stop_gradient(log_prob)
-    geom = pointcloud.PointCloud(intents, expert_intents, epsilon=0.001)
+    geom = pointcloud.PointCloud(intents, expert_intents, epsilon=0.01)
     
     a1, a2 = eval_value_ensemble(agent_value, states, intents).squeeze()
     an = jax.nn.softplus(a1 - jnp.quantile(a1, 0.001)) 

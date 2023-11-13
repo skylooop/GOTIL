@@ -341,6 +341,7 @@ def main(config: DictConfig):
     
     rng = jax.random.PRNGKey(config.seed)
     for i in tqdm(range(1, total_steps + 1), smoothing=0.1, dynamic_ncols=True, desc="Training"):
+        rng, rng1 = jax.random.split(rng, 2)
         pretrain_batch = gc_dataset.sample(config.batch_size, mode=config.algo.algo_name)
             
         if config.algo.algo_name == "gotil": 
@@ -350,7 +351,7 @@ def main(config: DictConfig):
             # save expert
             expert_training_icvf = False
             agent_dataset_batch = agent_gc_dataset.sample(config.batch_size, mode=config.algo.algo_name)
-            agent, update_info, rng = agent.pretrain_agent(agent_dataset_batch, rng)
+            agent, update_info = agent.pretrain_agent(agent_dataset_batch, rng)
             #print(update_info)
             
         elif config.algo.algo_name == "hiql":
