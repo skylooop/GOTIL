@@ -51,14 +51,12 @@ class JointGotilAgent(eqx.Module):
         updated_actor, aux_info = update_actor(self.actor_learner, pretrain_batch, self.value_net, intents)
         # Update ICVF using V(s, z) as advantage
         agent, agent_gotil_info = update(self.agent_icvf, pretrain_batch, intents, mode="gotil")
-        # Update usual ICVF
-        #agent, agent_icvf_info = update(agent, pretrain_batch)
         # Update intents of actor using OT
         expert_intents1, expert_intents2 = eqx.filter_jit(get_expert_intents)(self.expert_icvf.value_learner.model.psi_net, pretrain_batch['icvf_desired_goals'])
-        expert_marginals1, expert_marginals2 = eqx.filter_jit(eval_ensemble)(self.expert_icvf.value_learner.model, pretrain_batch['next_observations'], pretrain_batch['icvf_desired_goals'], pretrain_batch['icvf_desired_goals'], None)
+        expert_marginals1, expert_marginals2 = eqx.filter_jit(eval_ensemble)(self.expert_icvf.value_learner.model, pretrain_batch['next_observations'], pretrain_batch['icvf_desired_goals'], intents, None)
         agent_updated_v, updated_intent_actor, ot_info = eqx.filter_jit(ot_update)(self.actor_intents_learner, self.value_net, pretrain_batch, expert_marginals1, expert_intents1, key=seed)
 
-        return dataclasses.replace(self, agent_icvf=agent, value_net=agent_updated_v, actor_intents_learner=updated_intent_actor, actor_learner=updated_actor), ot_info
+        return dataclasses.replace(self, agent_icvf=agent, value_net=agent_updated_v, actor_intents_learner=updated_intent_actor, actor_learner=updated_actor), ot_info, intents
 
 @eqx.filter_jit
 def update_actor(actor_learner, batch, agent_value, intents):

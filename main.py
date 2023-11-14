@@ -62,7 +62,7 @@ def get_v(agent, goal, observations):
     return get_gcvalue(agent, observations, goal)
 
 @eqx.filter_jit
-def get_debug_statistics_icvf(agent, batch):
+def get_debug_statistics_icvf(agent, batch, intents=None):
     def get_info(s, g, z):
         if agent.config['no_intent']:
             return agent.value(s, g, jnp.ones_like(z), method='get_info')
@@ -70,13 +70,19 @@ def get_debug_statistics_icvf(agent, batch):
             return eval_ensemble(agent.value_learner.model, s, g, z, None)
     s = batch['observations']
     g = batch['icvf_goals']
-    z = batch['icvf_desired_goals']
-
+    if intents is not None:
+        z = intents
+        info_szz = None
+        info_szg = None
+        info_sgg = None
+    else:
+        z = batch['icvf_desired_goals']
+        info_szz = get_info(s, z, z)
+        info_szg = get_info(s, z, g)
+        info_sgg = get_info(s, g, g)
+        
     info_ssz = get_info(s, s, z)
-    info_szz = get_info(s, z, z)
     info_sgz = get_info(s, g, z)
-    info_sgg = get_info(s, g, g)
-    info_szg = get_info(s, z, g)
 
     if 'phi' in info_sgz:
         stats = {
@@ -88,12 +94,9 @@ def get_debug_statistics_icvf(agent, batch):
 
     stats.update({
         'v_ssz': info_ssz.mean(),
-        'v_szz': info_szz.mean(),
         'v_sgz': info_sgz.mean(),
-        'v_sgg': info_sgg.mean(),
-        'v_szg': info_szg.mean(),
-        'diff_szz_szg': (info_szz - info_szg).mean(),
-        'diff_sgg_sgz': (info_sgg - info_sgz).mean(),
+        #'diff_szz_szg': (info_szz - info_szg).mean(),
+        #'diff_sgg_sgz': (info_sgg - info_sgz).mean(),
         # 'v_ssz': info_ssz['v'].mean(),
         # 'v_szz': info_szz['v'].mean(),
         # 'v_sgz': info_sgz['v'].mean(),
@@ -102,6 +105,10 @@ def get_debug_statistics_icvf(agent, batch):
         # 'diff_szz_szg': (info_szz['v'] - info_szg['v']).mean(),
         # 'diff_sgg_sgz': (info_sgg['v'] - info_sgz['v']).mean(),
     })
+    if intents is None:
+        stats.update({'v_szz': info_szz.mean(),
+                      'v_szg': info_szg.mean(),
+                      'v_sgg': info_sgg.mean()})
     return stats
 
 @jax.jit
@@ -351,7 +358,7 @@ def main(config: DictConfig):
             # save expert
             expert_training_icvf = False
             agent_dataset_batch = agent_gc_dataset.sample(config.batch_size, mode=config.algo.algo_name)
-            agent, update_info = agent.pretrain_agent(agent_dataset_batch, rng)
+            agent, update_info, intents = agent.pretrain_agent(agent_dataset_batch, rng)
             
         elif config.algo.algo_name == "hiql":
             agent, update_info = supply_rng(agent.pretrain_update)(pretrain_batch)
@@ -369,7 +376,7 @@ def main(config: DictConfig):
                 if expert_training_icvf:
                     debug_statistics = get_debug_statistics_icvf(agent.expert_icvf, pretrain_batch)
                 else:
-                    debug_statistics = get_debug_statistics_icvf(agent.agent_icvf, pretrain_batch)
+                    debug_statistics = get_debug_statistics_icvf(agent.agent_icvf, pretrain_batch, intents)
             else:
                 debug_statistics = get_debug_statistics_icvf(agent, pretrain_batch)
             train_metrics = {f'training/{k}': v for k, v in update_info.items()}
@@ -383,10 +390,11 @@ def main(config: DictConfig):
                 
         if i % config.eval_interval == 0 and (config.algo.algo_name == "icvf" or config.algo.algo_name == "gotil"):
             if config.algo.algo_name == "gotil":
-                if expert_training_icvf:
-                    visualizations =  visualizer.generate_debug_plots(agent.expert_icvf)
-                else:
-                    visualizations =  visualizer.generate_debug_plots(agent.agent_icvf)
+                pass
+                # if expert_training_icvf:
+                #     visualizations =  visualizer.generate_debug_plots(agent.expert_icvf)
+                # else:
+                #     visualizations =  visualizer.generate_debug_plots(agent.agent_icvf)
                      
             else:
                 visualizations = visualizer.generate_debug_plots(agent)
