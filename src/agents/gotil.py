@@ -52,7 +52,7 @@ class JointGotilAgent(eqx.Module):
         # Update ICVF using V(s, z) as advantage
         agent, agent_gotil_info = update(self.agent_icvf, pretrain_batch, intents, mode="gotil")
         # Update usual ICVF
-        agent, agent_icvf_info = update(agent, pretrain_batch)
+        #agent, agent_icvf_info = update(agent, pretrain_batch)
         # Update intents of actor using OT
         expert_intents1, expert_intents2 = eqx.filter_jit(get_expert_intents)(self.expert_icvf.value_learner.model.psi_net, pretrain_batch['icvf_desired_goals'])
         expert_marginals1, expert_marginals2 = eqx.filter_jit(eval_ensemble)(self.expert_icvf.value_learner.model, pretrain_batch['next_observations'], pretrain_batch['icvf_desired_goals'], pretrain_batch['icvf_desired_goals'], None)
